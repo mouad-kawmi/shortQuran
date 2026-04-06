@@ -118,5 +118,27 @@
     "youtube_watch_url": "https://www.youtube.com/watch?v=fJPyxl3kpqo",
     "youtube_privacy_status": "public",
     "uploaded_at": "2026-04-06T03:07:25.041179+00:00"
+  },
+  {
+    "created_at": "2026-04-06T09:58:55.215827+00:00",
+    "combo_key": "76:11-18:abdur-rahman-as-sudais",
+    "chapter_number": 76,
+    "chapter_name": "Al-Insan",
+    "verse_reference": "76:11-18",
+    "verse_start": 11,
+    "verse_end": 18,
+    "reciter_name": "Abdur-Rahman as-Sudais",
+    "background_path": "/home/runner/work/shortQuran/shortQuran/backgroundPhoto/WhatsApp Image 2026-04-06 at 00.35.46 (1).jpeg",
+    "style_preset": "cinematic_compact",
+    "title_template_key": "ayah",
+    "title_text": "Al-Insan | Ayat 11-18",
+    "target_seconds": 56.0,
+    "planned_duration_seconds": 52.27,
+    "output_path": "/home/runner/work/shortQuran/shortQuran/outputs/auto-01-076-011-018-al-insan-abdur-rahman-as-su.mp4",
+    "rendered_at": "2026-04-06T10:00:07.508105+00:00",
+    "youtube_video_id": "kuPAri6CW4Y",
+    "youtube_watch_url": "https://www.youtube.com/watch?v=kuPAri6CW4Y",
+    "youtube_privacy_status": "public",
+    "uploaded_at": "2026-04-06T10:00:07.508121+00:00"
   }
 ]
