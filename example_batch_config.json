@@ -1,0 +1,67 @@
+{
+  "audio_path": "",
+  "audio_url": "",
+  "background_path": "",
+  "background_url": "",
+  "font_file": "",
+  "font_url": "",
+  "cache_dir": ".cache/downloads",
+  "brand_text": "shortQuran",
+  "fps": 30,
+  "jobs": [
+    {
+      "surah_number": 67,
+      "ayah_number": 1,
+      "reciter_key": "alafasy",
+      "recitation_relative_path": "",
+      "output_path": "outputs/surah-al-mulk-1-alafasy.mp4",
+      "surah_name": "Surah Al-Mulk",
+      "verse_reference": "",
+      "title_text": "Surah Al-Mulk | Ayah 1",
+      "reciter_name": "",
+      "verse_text": "تَبَارَكَ الَّذِي بِيَدِهِ الْمُلْكُ وَهُوَ عَلَىٰ كُلِّ شَيْءٍ قَدِيرٌ",
+      "translation": "Blessed is the One in Whose Hands rests all authority. And He is Most Capable of everything.",
+      "word_segments": [
+        {
+          "arabic": "تَبَارَكَ الَّذِي بِيَدِهِ الْمُلْكُ",
+          "translation": "Blessed is the One in Whose Hands is dominion"
+        },
+        {
+          "arabic": "وَهُوَ عَلَىٰ كُلِّ شَيْءٍ",
+          "translation": "And He is over every thing"
+        },
+        {
+          "arabic": "قَدِيرٌ",
+          "translation": "All-Powerful"
+        }
+      ]
+    },
+    {
+      "surah_number": 67,
+      "ayah_number": 1,
+      "reciter_key": "abdulbaset_mujawwad",
+      "recitation_relative_path": "",
+      "output_path": "outputs/surah-al-mulk-1-abdulbaset.mp4",
+      "surah_name": "Surah Al-Mulk",
+      "verse_reference": "",
+      "title_text": "Surah Al-Mulk | Ayah 1",
+      "reciter_name": "",
+      "verse_text": "تَبَارَكَ الَّذِي بِيَدِهِ الْمُلْكُ وَهُوَ عَلَىٰ كُلِّ شَيْءٍ قَدِيرٌ",
+      "translation": "Blessed is the One in Whose Hands rests all authority. And He is Most Capable of everything.",
+      "word_segments": [
+        {
+          "arabic": "تَبَارَكَ الَّذِي بِيَدِهِ الْمُلْكُ",
+          "translation": "Blessed is the One in Whose Hands is dominion"
+        },
+        {
+          "arabic": "وَهُوَ عَلَىٰ كُلِّ شَيْءٍ",
+          "translation": "And He is over every thing"
+        },
+        {
+          "arabic": "قَدِيرٌ",
+          "translation": "All-Powerful"
+        }
+      ]
+    }
+  ]
+}
