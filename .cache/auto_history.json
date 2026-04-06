@@ -74,5 +74,27 @@
     "youtube_watch_url": "https://www.youtube.com/watch?v=UfTt_Arcg4I",
     "youtube_privacy_status": "private",
     "uploaded_at": "2026-04-06T02:28:24.652137+00:00"
+  },
+  {
+    "created_at": "2026-04-06T02:48:47.274268+00:00",
+    "combo_key": "101:1-11:mohamed-siddiq-al-minshawi",
+    "chapter_number": 101,
+    "chapter_name": "Al-Qari'ah",
+    "verse_reference": "101:1-11",
+    "verse_start": 1,
+    "verse_end": 11,
+    "reciter_name": "Mohamed Siddiq al-Minshawi",
+    "background_path": "/home/runner/work/shortQuran/shortQuran/.cache/downloads/background/background-scenic_landscape-5a92c9a57be1.jpg",
+    "style_preset": "cinematic",
+    "title_template_key": "focus",
+    "title_text": "Quran Short | Al-Qari'ah",
+    "target_seconds": 62.0,
+    "planned_duration_seconds": 58.18,
+    "output_path": "/home/runner/work/shortQuran/shortQuran/outputs/auto-01-101-001-011-al-qari-ah-mohamed-siddiq-al.mp4",
+    "rendered_at": "2026-04-06T02:50:37.326018+00:00",
+    "youtube_video_id": "iq6fGbSDX-4",
+    "youtube_watch_url": "https://www.youtube.com/watch?v=iq6fGbSDX-4",
+    "youtube_privacy_status": "private",
+    "uploaded_at": "2026-04-06T02:50:37.326034+00:00"
   }
 ]
