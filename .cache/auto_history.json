@@ -165,5 +165,33 @@
     "tiktok_publish_id": "v_pub_file~v2-1.7625658229116733453",
     "tiktok_status": "PUBLISH_COMPLETE",
     "tiktok_privacy_level": "SELF_ONLY"
+  },
+  {
+    "created_at": "2026-04-06T17:52:02.627048+00:00",
+    "combo_key": "89:2-6:abdulbaset-abdulsamad",
+    "chapter_number": 89,
+    "chapter_name": "Al-Fajr",
+    "verse_reference": "89:2-6",
+    "verse_start": 2,
+    "verse_end": 6,
+    "reciter_name": "AbdulBaset AbdulSamad",
+    "background_path": "/home/runner/work/shortQuran/shortQuran/backgroundPhoto/WhatsApp Image 2026-04-06 at 00.35.46.jpeg",
+    "style_preset": "cinematic_spacious",
+    "title_template_key": "focus",
+    "title_text": "Quran Short | Al-Fajr",
+    "target_seconds": 48.0,
+    "planned_duration_seconds": 46.96,
+    "output_path": "/home/runner/work/shortQuran/shortQuran/outputs/auto-01-089-002-006-al-fajr-abdulbaset-abdulsa.mp4",
+    "rendered_at": "2026-04-06T17:54:45.847812+00:00",
+    "youtube_video_id": "uCTV3ara_uk",
+    "youtube_watch_url": "https://www.youtube.com/watch?v=uCTV3ara_uk",
+    "youtube_privacy_status": "public",
+    "uploaded_at": "2026-04-06T17:54:45.847833+00:00",
+    "facebook_video_id": "1377253067776606",
+    "facebook_status": "READY",
+    "facebook_video_state": "PUBLISHED",
+    "tiktok_publish_id": "v_pub_file~v2-1.7625705293795821582",
+    "tiktok_status": "PUBLISH_COMPLETE",
+    "tiktok_privacy_level": "SELF_ONLY"
   }
 ]
