@@ -283,6 +283,42 @@ Optional TikTok flags:
 - `--tiktok-disable-duet`
 - `--tiktok-disable-stitch`
 
+## Facebook Page upload
+
+Facebook Page posting now has an optional integration too.
+
+This script treats Facebook Page publishing as a Reel upload, because Meta's official Reels Publishing flow is designed for vertical `9:16`, `4-60 sec` Page videos, which matches the generated shorts in this project.
+
+Create this local config file:
+
+```text
+.secrets/facebook-page-config.json
+```
+
+with content like:
+
+```json
+{
+  "page_access_token": "YOUR_FACEBOOK_PAGE_ACCESS_TOKEN",
+  "api_version": "v24.0"
+}
+```
+
+To get that Page Access Token, Meta's official Facebook API collection shows two common options:
+
+- `GET /me/accounts?fields=name,access_token,tasks&access_token={user_access_token}`
+- `GET /{page_id}?fields=name,access_token&access_token={user_access_token}`
+
+Then you can upload after each render:
+
+```powershell
+python .\main.py --auto --count 1 --target-seconds 60 --facebook-upload --facebook-config-file .\.secrets\facebook-page-config.json
+```
+
+Optional Facebook flag:
+
+- `--facebook-video-state DRAFT`
+
 ## Run while your PC is off
 
 The repo now includes a scheduled GitHub Actions workflow:
@@ -320,7 +356,15 @@ Use the raw contents of:
 - `.secrets/tiktok-client-config.json`
 - `.secrets/tiktok-token.json`
 
-The included workflow now uploads to YouTube as `public` by default. If you enable the optional TikTok secrets too, the same workflow can post to TikTok in the same run.
+If you also want GitHub Actions to post to Facebook, add this optional repository secret:
+
+- `FACEBOOK_PAGE_CONFIG_JSON`
+
+Use the raw contents of:
+
+- `.secrets/facebook-page-config.json`
+
+The included workflow now uploads to YouTube as `public` by default. If you enable the optional Facebook and/or TikTok secrets too, the same workflow can post to those platforms in the same run.
 
 ## Notes
 

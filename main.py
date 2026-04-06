@@ -92,6 +92,16 @@ DEFAULT_YOUTUBE_CATEGORY_ID = "27"
 DEFAULT_YOUTUBE_DEFAULT_LANGUAGE = "en"
 DEFAULT_YOUTUBE_CLIENT_SECRETS_FILE = ".secrets/youtube-client-secret.json"
 DEFAULT_YOUTUBE_TOKEN_FILE = ".secrets/youtube-token.json"
+FACEBOOK_GRAPH_API_BASE_URL = "https://graph.facebook.com"
+DEFAULT_FACEBOOK_API_VERSION = "v24.0"
+DEFAULT_FACEBOOK_PAGE_CONFIG_FILE = ".secrets/facebook-page-config.json"
+DEFAULT_FACEBOOK_VIDEO_STATE = "PUBLISHED"
+FACEBOOK_VIDEO_STATE_CHOICES = (
+    "PUBLISHED",
+    "DRAFT",
+)
+FACEBOOK_STATUS_POLL_SECONDS = 10
+FACEBOOK_STATUS_MAX_POLLS = 18
 TIKTOK_OAUTH_AUTHORIZE_URL = "https://www.tiktok.com/v2/auth/authorize/"
 TIKTOK_OAUTH_TOKEN_URL = "https://open.tiktokapis.com/v2/oauth/token/"
 TIKTOK_CREATOR_INFO_URL = "https://open.tiktokapis.com/v2/post/publish/creator_info/query/"
@@ -344,6 +354,12 @@ class TikTokClientConfig:
 
 
 @dataclass(frozen=True)
+class FacebookPageConfig:
+    page_access_token: str
+    api_version: str = DEFAULT_FACEBOOK_API_VERSION
+
+
+@dataclass(frozen=True)
 class TikTokUploadOptions:
     client_config_file: Path
     token_file: Path
@@ -351,6 +367,12 @@ class TikTokUploadOptions:
     disable_comment: bool = False
     disable_duet: bool = False
     disable_stitch: bool = False
+
+
+@dataclass(frozen=True)
+class FacebookUploadOptions:
+    config_file: Path
+    video_state: str = DEFAULT_FACEBOOK_VIDEO_STATE
 
 
 def parse_args() -> argparse.Namespace:
@@ -400,6 +422,17 @@ def parse_args() -> argparse.Namespace:
         help="Default language metadata for YouTube uploads.",
     )
     parser.add_argument("--youtube-made-for-kids", action="store_true", help="Mark uploaded videos as made for kids.")
+    parser.add_argument("--facebook-upload", action="store_true", help="Upload rendered videos to a Facebook Page Reel after each successful render.")
+    parser.add_argument(
+        "--facebook-config-file",
+        help="Path to the Facebook Page config JSON file. Defaults to .secrets/facebook-page-config.json or FACEBOOK_PAGE_CONFIG_FILE.",
+    )
+    parser.add_argument(
+        "--facebook-video-state",
+        choices=FACEBOOK_VIDEO_STATE_CHOICES,
+        default=DEFAULT_FACEBOOK_VIDEO_STATE,
+        help="Publish state used for Facebook Page Reels. Defaults to PUBLISHED.",
+    )
     parser.add_argument("--tiktok-upload", action="store_true", help="Upload rendered videos to TikTok after each successful render.")
     parser.add_argument("--tiktok-auth-only", action="store_true", help="Run the one-time TikTok OAuth flow, save the token file, and exit.")
     parser.add_argument(
@@ -796,6 +829,18 @@ def build_tiktok_upload_options(args: argparse.Namespace, base_dir: Path) -> Tik
     )
 
 
+def build_facebook_upload_options(args: argparse.Namespace, base_dir: Path) -> FacebookUploadOptions:
+    config_raw = (
+        normalize_optional_text(args.facebook_config_file)
+        or normalize_optional_text(os.getenv("FACEBOOK_PAGE_CONFIG_FILE"))
+        or DEFAULT_FACEBOOK_PAGE_CONFIG_FILE
+    )
+    return FacebookUploadOptions(
+        config_file=resolve_runtime_path(base_dir, config_raw),
+        video_state=require_non_empty_text(args.facebook_video_state, "facebook-video-state"),
+    )
+
+
 def load_tiktok_client_config(config_path: Path) -> TikTokClientConfig:
     if not config_path.exists():
         raise FileNotFoundError(
@@ -825,6 +870,31 @@ def load_tiktok_client_config(config_path: Path) -> TikTokClientConfig:
         client_secret=require_non_empty_text(payload.get("client_secret", ""), "tiktok client_secret"),
         redirect_host=redirect_host,
         redirect_path=redirect_path,
+    )
+
+
+def load_facebook_page_config(config_path: Path) -> FacebookPageConfig:
+    if not config_path.exists():
+        raise FileNotFoundError(
+            f"Facebook Page config file not found: {config_path}. "
+            "Create a JSON file with a page_access_token from the Meta Pages API."
+        )
+
+    try:
+        payload = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise RuntimeError(f"Failed to read Facebook Page config from {config_path}: {error}") from error
+
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"Facebook Page config at {config_path} must be a JSON object.")
+
+    api_version = normalize_optional_text(payload.get("api_version")) or DEFAULT_FACEBOOK_API_VERSION
+    if not re.fullmatch(r"v\d+\.\d+", api_version):
+        raise RuntimeError("Facebook api_version must look like v24.0.")
+
+    return FacebookPageConfig(
+        page_access_token=require_non_empty_text(payload.get("page_access_token", ""), "facebook page_access_token"),
+        api_version=api_version,
     )
 
 
@@ -1120,6 +1190,164 @@ def build_tiktok_caption(config: RenderConfig) -> str:
     if hashtags:
         lines.extend(["", hashtags])
     return "\n".join(lines)[:2200].strip()
+
+
+def build_facebook_reel_title(config: RenderConfig) -> str:
+    return build_youtube_title(config).replace(" #Shorts", "")[:255].strip()
+
+
+def build_facebook_reel_description(config: RenderConfig) -> str:
+    return build_youtube_description(config)[:2200].strip()
+
+
+def build_facebook_graph_url(api_version: str, path: str, params: dict[str, object]) -> str:
+    return f"{FACEBOOK_GRAPH_API_BASE_URL}/{api_version}/{path}?{urlencode(params)}"
+
+
+def require_facebook_api_success(payload: dict[str, object], context: str) -> dict[str, object]:
+    error_payload = payload.get("error")
+    if isinstance(error_payload, dict):
+        error_code = normalize_optional_text(error_payload.get("code")) or "unknown_error"
+        error_message = normalize_optional_text(error_payload.get("message")) or ""
+        raise RuntimeError(f"Facebook {context} failed: {error_code} - {error_message}".strip())
+    return payload
+
+
+def upload_video_file_to_facebook(upload_url: str, page_access_token: str, video_path: Path) -> None:
+    video_size = video_path.stat().st_size
+    if video_size <= 0:
+        raise RuntimeError("Facebook upload failed: video file is empty.")
+
+    payload = request_json(
+        upload_url,
+        method="POST",
+        headers={
+            "Authorization": f"OAuth {page_access_token}",
+            "offset": "0",
+            "file_size": str(video_size),
+            "Content-Type": "application/octet-stream",
+            "Content-Length": str(video_size),
+        },
+        data=video_path.read_bytes(),
+        timeout=300,
+    )
+    payload = require_facebook_api_success(payload, "video transfer")
+    if payload and payload.get("success") is False:
+        raise RuntimeError("Facebook video transfer failed.")
+
+
+def fetch_facebook_reel_status(page_config: FacebookPageConfig, video_id: str) -> dict[str, object]:
+    payload = request_json(
+        build_facebook_graph_url(
+            page_config.api_version,
+            video_id,
+            {
+                "fields": "status",
+                "access_token": page_config.page_access_token,
+            },
+        ),
+        timeout=60,
+    )
+    payload = require_facebook_api_success(payload, "status fetch")
+    status_payload = payload.get("status")
+    if not isinstance(status_payload, dict):
+        return {}
+    return status_payload
+
+
+def summarize_facebook_reel_status(status_payload: dict[str, object]) -> str:
+    video_status = (normalize_optional_text(status_payload.get("video_status")) or "unknown").upper()
+    processing_progress = status_payload.get("processing_progress")
+    if isinstance(processing_progress, (int, float)) and video_status == "PROCESSING":
+        return f"{video_status} ({int(processing_progress)}%)"
+    return video_status
+
+
+def is_facebook_reel_status_terminal(status_payload: dict[str, object]) -> bool:
+    phase_statuses: list[str] = []
+    for phase_key in ("uploading_phase", "processing_phase", "publishing_phase"):
+        phase_payload = status_payload.get(phase_key)
+        if isinstance(phase_payload, dict):
+            phase_status = normalize_optional_text(phase_payload.get("status"))
+            if phase_status:
+                phase_statuses.append(phase_status.lower())
+    if any(status in {"error", "failed"} for status in phase_statuses):
+        raise RuntimeError(f"Facebook Reel status failed: {status_payload}")
+
+    video_status = normalize_optional_text(status_payload.get("video_status")) or ""
+    video_status_lower = video_status.lower()
+    if video_status_lower in {"error", "failed"}:
+        raise RuntimeError(f"Facebook Reel processing failed: {status_payload}")
+    if video_status_lower in {"published", "ready", "complete"}:
+        return True
+    if "complete" in phase_statuses and all(status == "complete" for status in phase_statuses if status):
+        return True
+    return False
+
+
+def poll_facebook_reel_status(page_config: FacebookPageConfig, video_id: str) -> dict[str, object]:
+    latest_status: dict[str, object] = {}
+    for _ in range(FACEBOOK_STATUS_MAX_POLLS):
+        latest_status = fetch_facebook_reel_status(page_config, video_id)
+        if latest_status and is_facebook_reel_status_terminal(latest_status):
+            return latest_status
+        time.sleep(FACEBOOK_STATUS_POLL_SECONDS)
+    return latest_status
+
+
+def upload_video_to_facebook(
+    *,
+    video_path: Path,
+    config: RenderConfig,
+    options: FacebookUploadOptions,
+) -> dict[str, str]:
+    page_config = load_facebook_page_config(options.config_file)
+    create_payload = request_json(
+        build_facebook_graph_url(
+            page_config.api_version,
+            "me/video_reels",
+            {
+                "access_token": page_config.page_access_token,
+                "upload_phase": "start",
+            },
+        ),
+        method="POST",
+        timeout=60,
+    )
+    create_payload = require_facebook_api_success(create_payload, "create reel")
+    video_id = require_non_empty_text(create_payload.get("video_id", ""), "facebook video_id")
+    upload_url = require_non_empty_text(create_payload.get("upload_url", ""), "facebook upload_url")
+
+    upload_video_file_to_facebook(upload_url, page_config.page_access_token, video_path)
+
+    publish_payload = request_json(
+        build_facebook_graph_url(
+            page_config.api_version,
+            "me/video_reels",
+            {
+                "access_token": page_config.page_access_token,
+                "video_id": video_id,
+                "upload_phase": "finish",
+                "video_state": options.video_state,
+                "description": build_facebook_reel_description(config),
+                "title": build_facebook_reel_title(config),
+            },
+        ),
+        method="POST",
+        timeout=60,
+    )
+    publish_payload = require_facebook_api_success(publish_payload, "publish reel")
+    if publish_payload.get("success") is False:
+        raise RuntimeError("Facebook publish reel failed.")
+
+    status_payload = poll_facebook_reel_status(page_config, video_id)
+    status_summary = summarize_facebook_reel_status(status_payload) if status_payload else options.video_state
+    return {
+        "video_id": video_id,
+        "status": status_summary,
+        "video_state": options.video_state,
+        "watch_url": "",
+    }
 
 
 def upload_video_file_to_tiktok(upload_url: str, video_path: Path) -> None:
@@ -2957,10 +3185,13 @@ def main() -> int:
     configs: list[RenderConfig] = []
     base_dir = Path.cwd()
     youtube_options = None
+    facebook_options = None
     tiktok_options = None
     try:
         if args.youtube_upload or args.youtube_auth_only:
             youtube_options = build_youtube_upload_options(args, base_dir)
+        if args.facebook_upload:
+            facebook_options = build_facebook_upload_options(args, base_dir)
         if args.tiktok_upload or args.tiktok_auth_only:
             tiktok_options = build_tiktok_upload_options(args, base_dir)
 
@@ -3002,6 +3233,7 @@ def main() -> int:
             try:
                 render_video(config)
                 youtube_upload_result = None
+                facebook_upload_result = None
                 tiktok_upload_result = None
                 if youtube_options is not None and args.youtube_upload:
                     print(f"Uploading to YouTube: {config.output_path.name}")
@@ -3016,6 +3248,20 @@ def main() -> int:
                         f"{youtube_upload_result['watch_url']} "
                         f"({youtube_upload_result['privacy_status']})"
                     )
+                if facebook_options is not None and args.facebook_upload:
+                    print(f"Uploading to Facebook Page: {config.output_path.name}")
+                    facebook_upload_result = upload_video_to_facebook(
+                        video_path=config.output_path,
+                        config=config,
+                        options=facebook_options,
+                    )
+                    facebook_message = (
+                        f"Uploaded to Facebook: video_id={facebook_upload_result['video_id']} "
+                        f"({facebook_upload_result['video_state']}, {facebook_upload_result['status']})"
+                    )
+                    if facebook_upload_result["watch_url"]:
+                        facebook_message += f" {facebook_upload_result['watch_url']}"
+                    print(facebook_message)
                 if tiktok_options is not None and args.tiktok_upload:
                     print(f"Uploading to TikTok: {config.output_path.name}")
                     tiktok_upload_result = upload_video_to_tiktok(
@@ -3038,6 +3284,12 @@ def main() -> int:
                         config.auto_history_entry["youtube_watch_url"] = youtube_upload_result["watch_url"]
                         config.auto_history_entry["youtube_privacy_status"] = youtube_upload_result["privacy_status"]
                         config.auto_history_entry["uploaded_at"] = datetime.now(timezone.utc).isoformat()
+                    if facebook_upload_result is not None:
+                        config.auto_history_entry["facebook_video_id"] = facebook_upload_result["video_id"]
+                        config.auto_history_entry["facebook_status"] = facebook_upload_result["status"]
+                        config.auto_history_entry["facebook_video_state"] = facebook_upload_result["video_state"]
+                        if facebook_upload_result["watch_url"]:
+                            config.auto_history_entry["facebook_watch_url"] = facebook_upload_result["watch_url"]
                     if tiktok_upload_result is not None:
                         config.auto_history_entry["tiktok_publish_id"] = tiktok_upload_result["publish_id"]
                         config.auto_history_entry["tiktok_status"] = tiktok_upload_result["status"]
