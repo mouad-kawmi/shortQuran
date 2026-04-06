@@ -96,5 +96,27 @@
     "youtube_watch_url": "https://www.youtube.com/watch?v=iq6fGbSDX-4",
     "youtube_privacy_status": "private",
     "uploaded_at": "2026-04-06T02:50:37.326034+00:00"
+  },
+  {
+    "created_at": "2026-04-06T03:06:17.700452+00:00",
+    "combo_key": "93:1-11:hani-ar-rifai",
+    "chapter_number": 93,
+    "chapter_name": "Ad-Duhaa",
+    "verse_reference": "93:1-11",
+    "verse_start": 1,
+    "verse_end": 11,
+    "reciter_name": "Hani ar-Rifai",
+    "background_path": "/home/runner/work/shortQuran/shortQuran/backgroundPhoto/WhatsApp Image 2026-04-06 at 00.35.46 (5).jpeg",
+    "style_preset": "cinematic_spacious",
+    "title_template_key": "reference",
+    "title_text": "Ad-Duhaa | 93:1-11",
+    "target_seconds": 50.0,
+    "planned_duration_seconds": 45.98,
+    "output_path": "/home/runner/work/shortQuran/shortQuran/outputs/auto-01-093-001-011-ad-duhaa-hani-ar-rifai.mp4",
+    "rendered_at": "2026-04-06T03:07:25.041161+00:00",
+    "youtube_video_id": "fJPyxl3kpqo",
+    "youtube_watch_url": "https://www.youtube.com/watch?v=fJPyxl3kpqo",
+    "youtube_privacy_status": "public",
+    "uploaded_at": "2026-04-06T03:07:25.041179+00:00"
   }
 ]
