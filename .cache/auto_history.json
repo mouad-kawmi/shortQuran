@@ -193,5 +193,33 @@
     "tiktok_publish_id": "v_pub_file~v2-1.7625705293795821582",
     "tiktok_status": "PUBLISH_COMPLETE",
     "tiktok_privacy_level": "SELF_ONLY"
+  },
+  {
+    "created_at": "2026-04-06T18:39:53.158351+00:00",
+    "combo_key": "109:1-6:mohamed-siddiq-al-minshawi",
+    "chapter_number": 109,
+    "chapter_name": "Al-Kafirun",
+    "verse_reference": "109:1-6",
+    "verse_start": 1,
+    "verse_end": 6,
+    "reciter_name": "Mohamed Siddiq al-Minshawi",
+    "background_path": "/home/runner/work/shortQuran/shortQuran/backgroundPhoto/WhatsApp Image 2026-04-06 at 00.35.46 (4).jpeg",
+    "style_preset": "cinematic_compact",
+    "title_template_key": "reference",
+    "title_text": "Al-Kafirun | 109:1-6",
+    "target_seconds": 64.0,
+    "planned_duration_seconds": 65.52,
+    "output_path": "/home/runner/work/shortQuran/shortQuran/outputs/auto-01-109-001-006-al-kafirun-mohamed-siddiq-al.mp4",
+    "rendered_at": "2026-04-06T18:43:15.182721+00:00",
+    "youtube_video_id": "PhVyUsN8qdw",
+    "youtube_watch_url": "https://www.youtube.com/watch?v=PhVyUsN8qdw",
+    "youtube_privacy_status": "public",
+    "uploaded_at": "2026-04-06T18:43:15.182743+00:00",
+    "facebook_video_id": "942143088730094",
+    "facebook_status": "READY",
+    "facebook_video_state": "PUBLISHED",
+    "tiktok_publish_id": "v_pub_file~v2-1.7625718057020950541",
+    "tiktok_status": "PUBLISH_COMPLETE",
+    "tiktok_privacy_level": "SELF_ONLY"
   }
 ]
