@@ -221,5 +221,30 @@
     "tiktok_publish_id": "v_pub_file~v2-1.7625718057020950541",
     "tiktok_status": "PUBLISH_COMPLETE",
     "tiktok_privacy_level": "SELF_ONLY"
+  },
+  {
+    "created_at": "2026-04-06T20:42:42.947970+00:00",
+    "combo_key": "77:31-41:abu-bakr-al-shatri",
+    "chapter_number": 77,
+    "chapter_name": "Al-Mursalat",
+    "verse_reference": "77:31-41",
+    "verse_start": 31,
+    "verse_end": 41,
+    "reciter_name": "Abu Bakr al-Shatri",
+    "background_path": "/home/runner/work/shortQuran/shortQuran/backgroundPhoto/WhatsApp Image 2026-04-06 at 00.35.47 (3).jpeg",
+    "style_preset": "cinematic",
+    "title_template_key": "ayah",
+    "title_text": "Al-Mursalat | Ayat 31-41",
+    "target_seconds": 50.0,
+    "planned_duration_seconds": 51.13,
+    "output_path": "/home/runner/work/shortQuran/shortQuran/outputs/auto-01-077-031-041-al-mursalat-abu-bakr-al-shatri.mp4",
+    "rendered_at": "2026-04-06T20:45:00.953050+00:00",
+    "youtube_video_id": "-Vghy-6ZsV0",
+    "youtube_watch_url": "https://www.youtube.com/watch?v=-Vghy-6ZsV0",
+    "youtube_privacy_status": "public",
+    "uploaded_at": "2026-04-06T20:45:00.953072+00:00",
+    "tiktok_publish_id": "v_pub_file~v2-1.7625749586380195853",
+    "tiktok_status": "PUBLISH_COMPLETE",
+    "tiktok_privacy_level": "SELF_ONLY"
   }
 ]
