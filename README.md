@@ -220,6 +220,69 @@ Optional flags:
 
 When `--youtube-schedule-at` is used, the script automatically forces the upload to `private`, because YouTube scheduling relies on `status.publishAt` for private videos.
 
+## TikTok upload
+
+TikTok direct posting now has an optional integration too.
+
+Before it can work, you need a TikTok Developers app with:
+
+- `Login Kit`
+- `Content Posting API`
+- the `video.publish` scope
+
+For desktop auth, TikTok requires a localhost redirect URI. In your TikTok app settings, add a redirect URI like:
+
+```text
+http://127.0.0.1:*/callback/
+```
+
+Then create this local config file:
+
+```text
+.secrets/tiktok-client-config.json
+```
+
+with content like:
+
+```json
+{
+  "client_key": "YOUR_TIKTOK_CLIENT_KEY",
+  "client_secret": "YOUR_TIKTOK_CLIENT_SECRET",
+  "redirect_host": "127.0.0.1",
+  "redirect_path": "/callback/"
+}
+```
+
+Run the one-time OAuth flow locally:
+
+```powershell
+python .\main.py --tiktok-auth-only --tiktok-client-config-file .\.secrets\tiktok-client-config.json --tiktok-token-file .\.secrets\tiktok-token.json
+```
+
+That creates:
+
+```text
+.secrets/tiktok-token.json
+```
+
+Then you can upload after each render:
+
+```powershell
+python .\main.py --auto --count 1 --target-seconds 60 --tiktok-upload --tiktok-client-config-file .\.secrets\tiktok-client-config.json --tiktok-token-file .\.secrets\tiktok-token.json
+```
+
+Important TikTok note:
+
+- unaudited TikTok apps can only post to private accounts through the API
+- this script defaults to `SELF_ONLY` for TikTok privacy until you explicitly change it
+
+Optional TikTok flags:
+
+- `--tiktok-privacy-level SELF_ONLY`
+- `--tiktok-disable-comment`
+- `--tiktok-disable-duet`
+- `--tiktok-disable-stitch`
+
 ## Run while your PC is off
 
 The repo now includes a scheduled GitHub Actions workflow:
@@ -232,7 +295,7 @@ It runs twice a day in UTC and does this:
 
 - installs FFmpeg and the YouTube client libraries
 - generates one automatic short
-- uploads it to YouTube as `private`
+- uploads it to YouTube as `public`
 - commits `.cache/auto_history.json` back to the repo so anti-repeat history survives future runs
 
 To enable it on GitHub, add these repository secrets:
@@ -247,7 +310,17 @@ The easiest setup is:
 3. Copy the contents of `.secrets/youtube-token.json` into `YOUTUBE_TOKEN_JSON`.
 4. Push the repo to GitHub and enable Actions.
 
-The included workflow uploads `private` by default, which is the safest starting point for a new channel automation setup.
+If you also want GitHub Actions to post to TikTok, add these optional repository secrets:
+
+- `TIKTOK_CLIENT_CONFIG_JSON`
+- `TIKTOK_TOKEN_JSON`
+
+Use the raw contents of:
+
+- `.secrets/tiktok-client-config.json`
+- `.secrets/tiktok-token.json`
+
+The included workflow now uploads to YouTube as `public` by default. If you enable the optional TikTok secrets too, the same workflow can post to TikTok in the same run.
 
 ## Notes
 

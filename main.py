@@ -3,22 +3,25 @@ from __future__ import annotations
 import argparse
 import html
 import hashlib
+import http.server
 import json
 import mimetypes
 import os
 import random
 import re
+import secrets
 import shutil
 import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
-from urllib.error import URLError
-from urllib.parse import urlencode, unquote, urlparse
+from urllib.error import HTTPError, URLError
+from urllib.parse import parse_qs, urlencode, unquote, urlparse
 from urllib.request import Request, urlopen
 
 VIDEO_WIDTH = 1080
@@ -89,6 +92,28 @@ DEFAULT_YOUTUBE_CATEGORY_ID = "27"
 DEFAULT_YOUTUBE_DEFAULT_LANGUAGE = "en"
 DEFAULT_YOUTUBE_CLIENT_SECRETS_FILE = ".secrets/youtube-client-secret.json"
 DEFAULT_YOUTUBE_TOKEN_FILE = ".secrets/youtube-token.json"
+TIKTOK_OAUTH_AUTHORIZE_URL = "https://www.tiktok.com/v2/auth/authorize/"
+TIKTOK_OAUTH_TOKEN_URL = "https://open.tiktokapis.com/v2/oauth/token/"
+TIKTOK_CREATOR_INFO_URL = "https://open.tiktokapis.com/v2/post/publish/creator_info/query/"
+TIKTOK_DIRECT_POST_INIT_URL = "https://open.tiktokapis.com/v2/post/publish/video/init/"
+TIKTOK_POST_STATUS_URL = "https://open.tiktokapis.com/v2/post/publish/status/fetch/"
+TIKTOK_UPLOAD_SCOPE = "video.publish"
+DEFAULT_TIKTOK_PRIVACY_LEVEL = "SELF_ONLY"
+DEFAULT_TIKTOK_CLIENT_CONFIG_FILE = ".secrets/tiktok-client-config.json"
+DEFAULT_TIKTOK_TOKEN_FILE = ".secrets/tiktok-token.json"
+DEFAULT_TIKTOK_REDIRECT_HOST = "127.0.0.1"
+DEFAULT_TIKTOK_REDIRECT_PATH = "/callback/"
+TIKTOK_PRIVACY_LEVEL_CHOICES = (
+    "PUBLIC_TO_EVERYONE",
+    "MUTUAL_FOLLOW_FRIENDS",
+    "FOLLOWER_OF_CREATOR",
+    "SELF_ONLY",
+)
+TIKTOK_ACCESS_TOKEN_REFRESH_BUFFER_SECONDS = 300
+TIKTOK_AUTH_TIMEOUT_SECONDS = 300
+TIKTOK_STATUS_POLL_SECONDS = 5
+TIKTOK_STATUS_MAX_POLLS = 12
+TIKTOK_SIMPLE_UPLOAD_MAX_BYTES = 64 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -196,18 +221,6 @@ class RenderConfig:
     style_preset: str = "classic"
     auto_history_entry: dict[str, object] | None = None
 
-
-@dataclass(frozen=True)
-class YouTubeUploadOptions:
-    client_secrets_file: Path
-    token_file: Path
-    privacy_status: str = DEFAULT_YOUTUBE_PRIVACY_STATUS
-    schedule_at: datetime | None = None
-    category_id: str = DEFAULT_YOUTUBE_CATEGORY_ID
-    tags: tuple[str, ...] = ()
-    default_language: str = DEFAULT_YOUTUBE_DEFAULT_LANGUAGE
-    made_for_kids: bool = False
-
     @classmethod
     def from_file(cls, config_path: Path) -> "RenderConfig":
         config_path = config_path.expanduser().resolve()
@@ -310,6 +323,36 @@ class YouTubeUploadOptions:
         )
 
 
+@dataclass(frozen=True)
+class YouTubeUploadOptions:
+    client_secrets_file: Path
+    token_file: Path
+    privacy_status: str = DEFAULT_YOUTUBE_PRIVACY_STATUS
+    schedule_at: datetime | None = None
+    category_id: str = DEFAULT_YOUTUBE_CATEGORY_ID
+    tags: tuple[str, ...] = ()
+    default_language: str = DEFAULT_YOUTUBE_DEFAULT_LANGUAGE
+    made_for_kids: bool = False
+
+
+@dataclass(frozen=True)
+class TikTokClientConfig:
+    client_key: str
+    client_secret: str
+    redirect_host: str = DEFAULT_TIKTOK_REDIRECT_HOST
+    redirect_path: str = DEFAULT_TIKTOK_REDIRECT_PATH
+
+
+@dataclass(frozen=True)
+class TikTokUploadOptions:
+    client_config_file: Path
+    token_file: Path
+    privacy_level: str = DEFAULT_TIKTOK_PRIVACY_LEVEL
+    disable_comment: bool = False
+    disable_duet: bool = False
+    disable_stitch: bool = False
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate a Quran short video from audio, text, and optional background media.")
     parser.add_argument("--config", help="Path to a JSON config file.")
@@ -357,6 +400,25 @@ def parse_args() -> argparse.Namespace:
         help="Default language metadata for YouTube uploads.",
     )
     parser.add_argument("--youtube-made-for-kids", action="store_true", help="Mark uploaded videos as made for kids.")
+    parser.add_argument("--tiktok-upload", action="store_true", help="Upload rendered videos to TikTok after each successful render.")
+    parser.add_argument("--tiktok-auth-only", action="store_true", help="Run the one-time TikTok OAuth flow, save the token file, and exit.")
+    parser.add_argument(
+        "--tiktok-client-config-file",
+        help="Path to the TikTok client config JSON file. Defaults to .secrets/tiktok-client-config.json or TIKTOK_CLIENT_CONFIG_FILE.",
+    )
+    parser.add_argument(
+        "--tiktok-token-file",
+        help="Path to the stored TikTok OAuth token JSON file. Defaults to .secrets/tiktok-token.json or TIKTOK_TOKEN_FILE.",
+    )
+    parser.add_argument(
+        "--tiktok-privacy-level",
+        choices=TIKTOK_PRIVACY_LEVEL_CHOICES,
+        default=DEFAULT_TIKTOK_PRIVACY_LEVEL,
+        help="TikTok privacy level for direct posts. Unaudited TikTok apps can only post to private accounts.",
+    )
+    parser.add_argument("--tiktok-disable-comment", action="store_true", help="Disable comments on TikTok uploads.")
+    parser.add_argument("--tiktok-disable-duet", action="store_true", help="Disable duets on TikTok uploads.")
+    parser.add_argument("--tiktok-disable-stitch", action="store_true", help="Disable stitch on TikTok uploads.")
     return parser.parse_args()
 
 
@@ -712,6 +774,467 @@ def build_youtube_upload_options(args: argparse.Namespace, base_dir: Path) -> Yo
     )
 
 
+def build_tiktok_upload_options(args: argparse.Namespace, base_dir: Path) -> TikTokUploadOptions:
+    client_config_raw = (
+        normalize_optional_text(args.tiktok_client_config_file)
+        or normalize_optional_text(os.getenv("TIKTOK_CLIENT_CONFIG_FILE"))
+        or DEFAULT_TIKTOK_CLIENT_CONFIG_FILE
+    )
+    token_file_raw = (
+        normalize_optional_text(args.tiktok_token_file)
+        or normalize_optional_text(os.getenv("TIKTOK_TOKEN_FILE"))
+        or DEFAULT_TIKTOK_TOKEN_FILE
+    )
+
+    return TikTokUploadOptions(
+        client_config_file=resolve_runtime_path(base_dir, client_config_raw),
+        token_file=resolve_runtime_path(base_dir, token_file_raw),
+        privacy_level=require_non_empty_text(args.tiktok_privacy_level, "tiktok-privacy-level"),
+        disable_comment=bool(args.tiktok_disable_comment),
+        disable_duet=bool(args.tiktok_disable_duet),
+        disable_stitch=bool(args.tiktok_disable_stitch),
+    )
+
+
+def load_tiktok_client_config(config_path: Path) -> TikTokClientConfig:
+    if not config_path.exists():
+        raise FileNotFoundError(
+            f"TikTok client config file not found: {config_path}. "
+            "Create a JSON file with client_key and client_secret from TikTok Developers."
+        )
+
+    try:
+        payload = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise RuntimeError(f"Failed to read TikTok client config from {config_path}: {error}") from error
+
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"TikTok client config at {config_path} must be a JSON object.")
+
+    redirect_host = normalize_optional_text(payload.get("redirect_host")) or DEFAULT_TIKTOK_REDIRECT_HOST
+    redirect_path = normalize_optional_text(payload.get("redirect_path")) or DEFAULT_TIKTOK_REDIRECT_PATH
+    if redirect_host not in {"127.0.0.1", "localhost"}:
+        raise RuntimeError("TikTok redirect_host must be localhost or 127.0.0.1.")
+    if not redirect_path.startswith("/"):
+        redirect_path = f"/{redirect_path}"
+    if not redirect_path.endswith("/"):
+        redirect_path = f"{redirect_path}/"
+
+    return TikTokClientConfig(
+        client_key=require_non_empty_text(payload.get("client_key", ""), "tiktok client_key"),
+        client_secret=require_non_empty_text(payload.get("client_secret", ""), "tiktok client_secret"),
+        redirect_host=redirect_host,
+        redirect_path=redirect_path,
+    )
+
+
+def request_json(
+    url: str,
+    *,
+    method: str = "GET",
+    headers: dict[str, str] | None = None,
+    data: bytes | None = None,
+    timeout: int = 60,
+) -> dict[str, object]:
+    request_headers = {
+        "User-Agent": "shortQuran/1.0",
+        "Accept": "application/json",
+    }
+    if headers:
+        request_headers.update(headers)
+
+    request = Request(url, data=data, headers=request_headers, method=method)
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            raw_body = response.read()
+    except HTTPError as error:
+        raw_error_body = error.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Failed to call {url}: HTTP {error.code} {error.reason} - {raw_error_body}") from error
+    except (OSError, URLError) as error:
+        raise RuntimeError(f"Failed to call {url}: {error}") from error
+
+    if not raw_body:
+        return {}
+
+    try:
+        return json.loads(raw_body.decode("utf-8"))
+    except json.JSONDecodeError as error:
+        raise RuntimeError(f"Failed to decode JSON response from {url}: {error}") from error
+
+
+def post_form_json(url: str, form_data: dict[str, object], *, timeout: int = 60) -> dict[str, object]:
+    encoded_form = urlencode(form_data).encode("utf-8")
+    return request_json(
+        url,
+        method="POST",
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        data=encoded_form,
+        timeout=timeout,
+    )
+
+
+def post_json(url: str, payload: dict[str, object], *, headers: dict[str, str] | None = None, timeout: int = 60) -> dict[str, object]:
+    encoded_payload = json.dumps(payload).encode("utf-8")
+    merged_headers = {"Content-Type": "application/json; charset=UTF-8"}
+    if headers:
+        merged_headers.update(headers)
+    return request_json(url, method="POST", headers=merged_headers, data=encoded_payload, timeout=timeout)
+
+
+def normalize_tiktok_token_payload(payload: dict[str, object]) -> dict[str, object]:
+    now_epoch = int(time.time())
+
+    def get_optional_int(key: str) -> int | None:
+        value = payload.get(key)
+        if value is None:
+            return None
+        return int(value)
+
+    normalized_payload = dict(payload)
+    expires_in = get_optional_int("expires_in")
+    refresh_expires_in = get_optional_int("refresh_expires_in")
+    if expires_in is not None:
+        normalized_payload["access_token_expires_at"] = now_epoch + expires_in
+    if refresh_expires_in is not None:
+        normalized_payload["refresh_token_expires_at"] = now_epoch + refresh_expires_in
+    normalized_payload["saved_at"] = datetime.now(timezone.utc).isoformat()
+    return normalized_payload
+
+
+def load_tiktok_token_payload(token_path: Path) -> dict[str, object] | None:
+    if not token_path.exists():
+        return None
+
+    try:
+        payload = json.loads(token_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise RuntimeError(f"Failed to read TikTok token file {token_path}: {error}") from error
+
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"TikTok token file {token_path} must contain a JSON object.")
+    return payload
+
+
+def save_tiktok_token_payload(token_path: Path, payload: dict[str, object]) -> None:
+    token_path.parent.mkdir(parents=True, exist_ok=True)
+    token_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def is_tiktok_access_token_valid(payload: dict[str, object]) -> bool:
+    access_token = normalize_optional_text(payload.get("access_token"))
+    expires_at = payload.get("access_token_expires_at")
+    if access_token is None or expires_at is None:
+        return False
+    return int(expires_at) - TIKTOK_ACCESS_TOKEN_REFRESH_BUFFER_SECONDS > int(time.time())
+
+
+def refresh_tiktok_access_token(options: TikTokUploadOptions, client_config: TikTokClientConfig, token_payload: dict[str, object]) -> dict[str, object]:
+    refresh_token = normalize_optional_text(token_payload.get("refresh_token"))
+    if refresh_token is None:
+        raise RuntimeError("TikTok token file is missing a refresh_token. Run '--tiktok-auth-only' again.")
+
+    refreshed_payload = post_form_json(
+        TIKTOK_OAUTH_TOKEN_URL,
+        {
+            "client_key": client_config.client_key,
+            "client_secret": client_config.client_secret,
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+        },
+    )
+    if normalize_optional_text(refreshed_payload.get("error")):
+        raise RuntimeError(
+            "TikTok token refresh failed: "
+            f"{refreshed_payload.get('error')} - {refreshed_payload.get('error_description', '')}".strip()
+        )
+
+    normalized_payload = normalize_tiktok_token_payload(refreshed_payload)
+    save_tiktok_token_payload(options.token_file, normalized_payload)
+    return normalized_payload
+
+
+def create_tiktok_callback_server(
+    *,
+    redirect_host: str,
+    redirect_path: str,
+) -> tuple[http.server.HTTPServer, dict[str, str]]:
+    callback_result: dict[str, str] = {}
+
+    class TikTokOAuthHandler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A003
+            return
+
+        def do_GET(self) -> None:  # noqa: N802
+            parsed = urlparse(self.path)
+            if parsed.path != redirect_path:
+                self.send_response(404)
+                self.end_headers()
+                self.wfile.write(b"Not found.")
+                return
+
+            params = parse_qs(parsed.query)
+            for key in ("code", "state", "error", "error_description"):
+                if params.get(key):
+                    callback_result[key] = params[key][0]
+
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(b"You can close this tab now.")
+
+    server = http.server.HTTPServer((redirect_host, 0), TikTokOAuthHandler)
+    server.timeout = 1
+    return server, callback_result
+
+
+def get_tiktok_credentials(options: TikTokUploadOptions, *, interactive: bool) -> dict[str, object]:
+    client_config = load_tiktok_client_config(options.client_config_file)
+    token_payload = load_tiktok_token_payload(options.token_file)
+
+    if token_payload and is_tiktok_access_token_valid(token_payload):
+        return token_payload
+
+    if token_payload and normalize_optional_text(token_payload.get("refresh_token")):
+        refreshed_payload = refresh_tiktok_access_token(options, client_config, token_payload)
+        if is_tiktok_access_token_valid(refreshed_payload):
+            return refreshed_payload
+
+    if not interactive:
+        raise RuntimeError(
+            "TikTok token file is missing or expired. Run '--tiktok-auth-only' once on a machine with a browser "
+            "to generate a refresh token before using unattended uploads."
+        )
+
+    state = secrets.token_urlsafe(24)
+    code_verifier = secrets.token_urlsafe(64)[:96]
+    code_challenge = hashlib.sha256(code_verifier.encode("utf-8")).hexdigest()
+
+    callback_server, callback_result = create_tiktok_callback_server(
+        redirect_host=client_config.redirect_host,
+        redirect_path=client_config.redirect_path,
+    )
+    try:
+        redirect_uri = f"http://{client_config.redirect_host}:{callback_server.server_port}{client_config.redirect_path}"
+        authorize_url = (
+            f"{TIKTOK_OAUTH_AUTHORIZE_URL}?"
+            f"{urlencode({'client_key': client_config.client_key, 'response_type': 'code', 'scope': TIKTOK_UPLOAD_SCOPE, 'redirect_uri': redirect_uri, 'state': state, 'code_challenge': code_challenge, 'code_challenge_method': 'S256'})}"
+        )
+        print(f"Open this URL in your browser to authorize TikTok posting access: {authorize_url}")
+
+        deadline = time.time() + TIKTOK_AUTH_TIMEOUT_SECONDS
+        while time.time() < deadline:
+            callback_server.handle_request()
+            if callback_result:
+                break
+    finally:
+        callback_server.server_close()
+
+    if not callback_result:
+        raise TimeoutError("Timed out waiting for the TikTok OAuth callback.")
+    if callback_result.get("error"):
+        raise RuntimeError(
+            "TikTok authorization failed: "
+            f"{callback_result.get('error')} - {callback_result.get('error_description', '')}".strip()
+        )
+    if callback_result.get("state") != state:
+        raise RuntimeError("TikTok authorization failed because the returned state did not match.")
+
+    authorization_code = normalize_optional_text(callback_result.get("code"))
+    if authorization_code is None:
+        raise RuntimeError("TikTok authorization callback did not include a code.")
+
+    token_payload = post_form_json(
+        TIKTOK_OAUTH_TOKEN_URL,
+        {
+            "client_key": client_config.client_key,
+            "client_secret": client_config.client_secret,
+            "code": authorization_code,
+            "grant_type": "authorization_code",
+            "redirect_uri": redirect_uri,
+            "code_verifier": code_verifier,
+        },
+    )
+    if normalize_optional_text(token_payload.get("error")):
+        raise RuntimeError(
+            "TikTok token exchange failed: "
+            f"{token_payload.get('error')} - {token_payload.get('error_description', '')}".strip()
+        )
+
+    normalized_payload = normalize_tiktok_token_payload(token_payload)
+    save_tiktok_token_payload(options.token_file, normalized_payload)
+    return normalized_payload
+
+
+def require_tiktok_api_success(payload: dict[str, object], context: str) -> dict[str, object]:
+    error_payload = payload.get("error")
+    if isinstance(error_payload, dict):
+        error_code = normalize_optional_text(error_payload.get("code")) or "unknown_error"
+        error_message = normalize_optional_text(error_payload.get("message")) or ""
+        if error_code.lower() != "ok":
+            raise RuntimeError(f"TikTok {context} failed: {error_code} - {error_message}".strip())
+
+    data_payload = payload.get("data")
+    if not isinstance(data_payload, dict):
+        raise RuntimeError(f"TikTok {context} failed: missing response data.")
+    return data_payload
+
+
+def query_tiktok_creator_info(access_token: str) -> dict[str, object]:
+    payload = post_json(
+        TIKTOK_CREATOR_INFO_URL,
+        {},
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    return require_tiktok_api_success(payload, "creator info query")
+
+
+def resolve_tiktok_privacy_level(requested_level: str, creator_info: dict[str, object]) -> str:
+    options = [
+        option
+        for option in (
+            normalize_optional_text(option)
+            for option in creator_info.get("privacy_level_options", [])
+            if isinstance(creator_info.get("privacy_level_options"), list)
+        )
+        if option is not None
+    ]
+    if not options:
+        raise RuntimeError("TikTok creator info did not return any privacy_level_options.")
+    if requested_level in options:
+        return requested_level
+    if DEFAULT_TIKTOK_PRIVACY_LEVEL in options:
+        print(
+            f"TikTok privacy level '{requested_level}' is not available for this account. "
+            f"Falling back to '{DEFAULT_TIKTOK_PRIVACY_LEVEL}'."
+        )
+        return DEFAULT_TIKTOK_PRIVACY_LEVEL
+    print(f"TikTok privacy level '{requested_level}' is not available. Falling back to '{options[0]}'.")
+    return options[0]
+
+
+def build_tiktok_caption(config: RenderConfig) -> str:
+    lines = [build_youtube_title(config).replace(" #Shorts", "")]
+    if config.reciter_name:
+        lines.append(f"Reciter: {config.reciter_name}")
+    hashtags = " ".join(build_youtube_hashtags(config))
+    if hashtags:
+        lines.extend(["", hashtags])
+    return "\n".join(lines)[:2200].strip()
+
+
+def upload_video_file_to_tiktok(upload_url: str, video_path: Path) -> None:
+    video_size = video_path.stat().st_size
+    if video_size <= 0:
+        raise RuntimeError("TikTok upload failed: video file is empty.")
+    if video_size > TIKTOK_SIMPLE_UPLOAD_MAX_BYTES:
+        raise RuntimeError(
+            "TikTok upload failed: generated video is larger than the current direct-upload limit "
+            "supported by this script (64 MB)."
+        )
+
+    content_type = mimetypes.guess_type(str(video_path))[0] or "video/mp4"
+    if content_type not in {"video/mp4", "video/quicktime", "video/webm"}:
+        content_type = "video/mp4"
+
+    request = Request(
+        upload_url,
+        data=video_path.read_bytes(),
+        headers={
+            "Content-Type": content_type,
+            "Content-Length": str(video_size),
+            "Content-Range": f"bytes 0-{video_size - 1}/{video_size}",
+        },
+        method="PUT",
+    )
+    try:
+        with urlopen(request, timeout=300):
+            return
+    except (OSError, URLError) as error:
+        raise RuntimeError(f"TikTok video transfer failed: {error}") from error
+
+
+def fetch_tiktok_publish_status(access_token: str, publish_id: str) -> dict[str, object]:
+    payload = post_json(
+        TIKTOK_POST_STATUS_URL,
+        {"publish_id": publish_id},
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    return require_tiktok_api_success(payload, "status fetch")
+
+
+def poll_tiktok_publish_status(access_token: str, publish_id: str) -> dict[str, object]:
+    latest_status: dict[str, object] = {}
+    for _ in range(TIKTOK_STATUS_MAX_POLLS):
+        latest_status = fetch_tiktok_publish_status(access_token, publish_id)
+        status_value = normalize_optional_text(latest_status.get("status")) or ""
+        public_post_ids = latest_status.get("publicaly_available_post_id")
+        if isinstance(public_post_ids, list) and public_post_ids:
+            return latest_status
+        if status_value.upper() == "FAILED":
+            return latest_status
+        time.sleep(TIKTOK_STATUS_POLL_SECONDS)
+    return latest_status
+
+
+def upload_video_to_tiktok(
+    *,
+    video_path: Path,
+    config: RenderConfig,
+    options: TikTokUploadOptions,
+    interactive_auth: bool,
+) -> dict[str, str]:
+    token_payload = get_tiktok_credentials(options, interactive=interactive_auth)
+    access_token = require_non_empty_text(token_payload.get("access_token", ""), "tiktok access_token")
+    creator_info = query_tiktok_creator_info(access_token)
+    privacy_level = resolve_tiktok_privacy_level(options.privacy_level, creator_info)
+    disable_comment = options.disable_comment or bool(creator_info.get("comment_disabled"))
+    disable_duet = options.disable_duet or bool(creator_info.get("duet_disabled"))
+    disable_stitch = options.disable_stitch or bool(creator_info.get("stitch_disabled"))
+
+    init_payload = post_json(
+        TIKTOK_DIRECT_POST_INIT_URL,
+        {
+            "post_info": {
+                "title": build_tiktok_caption(config),
+                "privacy_level": privacy_level,
+                "disable_comment": disable_comment,
+                "disable_duet": disable_duet,
+                "disable_stitch": disable_stitch,
+            },
+            "source_info": {
+                "source": "FILE_UPLOAD",
+                "video_size": video_path.stat().st_size,
+                "chunk_size": video_path.stat().st_size,
+                "total_chunk_count": 1,
+            },
+        },
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    init_data = require_tiktok_api_success(init_payload, "direct post init")
+    publish_id = require_non_empty_text(init_data.get("publish_id", ""), "tiktok publish_id")
+    upload_url = require_non_empty_text(init_data.get("upload_url", ""), "tiktok upload_url")
+    upload_video_file_to_tiktok(upload_url, video_path)
+
+    status_payload = poll_tiktok_publish_status(access_token, publish_id)
+    status_value = normalize_optional_text(status_payload.get("status")) or "PROCESSING"
+    public_post_ids = status_payload.get("publicaly_available_post_id")
+    post_id = ""
+    if isinstance(public_post_ids, list) and public_post_ids:
+        post_id = str(public_post_ids[0]).strip()
+    creator_username = normalize_optional_text(creator_info.get("creator_username")) or ""
+    watch_url = ""
+    if creator_username and post_id:
+        watch_url = f"https://www.tiktok.com/@{creator_username}/video/{post_id}"
+
+    return {
+        "publish_id": publish_id,
+        "status": status_value,
+        "privacy_level": privacy_level,
+        "post_id": post_id,
+        "watch_url": watch_url,
+    }
+
+
 def import_youtube_client_modules() -> tuple[object, object, object, object, object]:
     try:
         from google.auth.transport.requests import Request as GoogleAuthRequest
@@ -832,7 +1355,7 @@ def build_youtube_hashtags(config: RenderConfig) -> list[str]:
         if cleaned_hashtag.lower() in {existing.lower() for existing in deduped_hashtags}:
             continue
         deduped_hashtags.append(cleaned_hashtag)
-    return deduped_hashtags[:9]
+    return deduped_hashtags[:10]
 
 
 def build_youtube_tags(config: RenderConfig, extra_tags: tuple[str, ...]) -> list[str]:
@@ -2434,15 +2957,24 @@ def main() -> int:
     configs: list[RenderConfig] = []
     base_dir = Path.cwd()
     youtube_options = None
+    tiktok_options = None
     try:
         if args.youtube_upload or args.youtube_auth_only:
             youtube_options = build_youtube_upload_options(args, base_dir)
+        if args.tiktok_upload or args.tiktok_auth_only:
+            tiktok_options = build_tiktok_upload_options(args, base_dir)
 
         if args.youtube_auth_only:
             if youtube_options is None:
                 raise RuntimeError("YouTube upload options could not be built.")
             get_youtube_credentials(youtube_options, interactive=True)
             print(f"YouTube token saved to {youtube_options.token_file}")
+            return 0
+        if args.tiktok_auth_only:
+            if tiktok_options is None:
+                raise RuntimeError("TikTok upload options could not be built.")
+            get_tiktok_credentials(tiktok_options, interactive=True)
+            print(f"TikTok token saved to {tiktok_options.token_file}")
             return 0
 
         use_auto_mode = args.auto or not args.config
@@ -2469,10 +3001,11 @@ def main() -> int:
                 )
             try:
                 render_video(config)
-                upload_result = None
+                youtube_upload_result = None
+                tiktok_upload_result = None
                 if youtube_options is not None and args.youtube_upload:
                     print(f"Uploading to YouTube: {config.output_path.name}")
-                    upload_result = upload_video_to_youtube(
+                    youtube_upload_result = upload_video_to_youtube(
                         video_path=config.output_path,
                         config=config,
                         options=youtube_options,
@@ -2480,16 +3013,37 @@ def main() -> int:
                     )
                     print(
                         "Uploaded to YouTube: "
-                        f"{upload_result['watch_url']} "
-                        f"({upload_result['privacy_status']})"
+                        f"{youtube_upload_result['watch_url']} "
+                        f"({youtube_upload_result['privacy_status']})"
                     )
+                if tiktok_options is not None and args.tiktok_upload:
+                    print(f"Uploading to TikTok: {config.output_path.name}")
+                    tiktok_upload_result = upload_video_to_tiktok(
+                        video_path=config.output_path,
+                        config=config,
+                        options=tiktok_options,
+                        interactive_auth=False,
+                    )
+                    tiktok_message = (
+                        f"Uploaded to TikTok: publish_id={tiktok_upload_result['publish_id']} "
+                        f"({tiktok_upload_result['privacy_level']}, {tiktok_upload_result['status']})"
+                    )
+                    if tiktok_upload_result["watch_url"]:
+                        tiktok_message += f" {tiktok_upload_result['watch_url']}"
+                    print(tiktok_message)
                 if config.auto_history_entry is not None:
                     config.auto_history_entry["rendered_at"] = datetime.now(timezone.utc).isoformat()
-                    if upload_result is not None:
-                        config.auto_history_entry["youtube_video_id"] = upload_result["video_id"]
-                        config.auto_history_entry["youtube_watch_url"] = upload_result["watch_url"]
-                        config.auto_history_entry["youtube_privacy_status"] = upload_result["privacy_status"]
+                    if youtube_upload_result is not None:
+                        config.auto_history_entry["youtube_video_id"] = youtube_upload_result["video_id"]
+                        config.auto_history_entry["youtube_watch_url"] = youtube_upload_result["watch_url"]
+                        config.auto_history_entry["youtube_privacy_status"] = youtube_upload_result["privacy_status"]
                         config.auto_history_entry["uploaded_at"] = datetime.now(timezone.utc).isoformat()
+                    if tiktok_upload_result is not None:
+                        config.auto_history_entry["tiktok_publish_id"] = tiktok_upload_result["publish_id"]
+                        config.auto_history_entry["tiktok_status"] = tiktok_upload_result["status"]
+                        config.auto_history_entry["tiktok_privacy_level"] = tiktok_upload_result["privacy_level"]
+                        if tiktok_upload_result["watch_url"]:
+                            config.auto_history_entry["tiktok_watch_url"] = tiktok_upload_result["watch_url"]
                     append_auto_history_entry(base_dir, config.auto_history_entry)
             except Exception as error:  # noqa: BLE001
                 raise RuntimeError(
