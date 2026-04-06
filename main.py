@@ -815,8 +815,12 @@ def build_youtube_hashtags(config: RenderConfig) -> list[str]:
     raw_hashtags = [
         "#Shorts",
         "#Quran",
+        "#Islam",
         "#QuranShorts",
         "#QuranRecitation",
+        "#القرآن",
+        "#القرآن_الكريم",
+        "#راحه_نفسيه",
         make_hashtag(surah_base, prefix="Surah"),
         make_hashtag(reciter_label),
     ]
@@ -828,7 +832,7 @@ def build_youtube_hashtags(config: RenderConfig) -> list[str]:
         if cleaned_hashtag.lower() in {existing.lower() for existing in deduped_hashtags}:
             continue
         deduped_hashtags.append(cleaned_hashtag)
-    return deduped_hashtags[:6]
+    return deduped_hashtags[:9]
 
 
 def build_youtube_tags(config: RenderConfig, extra_tags: tuple[str, ...]) -> list[str]:

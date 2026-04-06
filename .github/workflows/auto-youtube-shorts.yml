@@ -3,7 +3,7 @@ name: Auto YouTube Shorts
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 9,18 * * *"
+    - cron: "0 20,23 * * *"
 
 permissions:
   contents: write
@@ -52,7 +52,7 @@ jobs:
             --youtube-client-secrets-file ./.secrets/youtube-client-secret.json \
             --youtube-token-file ./.secrets/youtube-token.json \
             --youtube-privacy-status public \
-            --youtube-tags "quran,shorts,islam"
+            --youtube-tags "quran,shorts,islam,quran recitation,peaceful quran"
 
       - name: Persist Auto History
         run: |
