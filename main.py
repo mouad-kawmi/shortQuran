@@ -768,21 +768,86 @@ def get_youtube_credentials(options: YouTubeUploadOptions, *, interactive: bool)
 
 
 def build_youtube_title(config: RenderConfig) -> str:
-    base_title = normalize_optional_text(config.title_text) or f"{config.surah_name} | {config.verse_reference}"
+    surah_label = normalize_optional_text(config.surah_name) or "Quran"
+    verse_label = normalize_optional_text(config.verse_reference) or ""
+    reciter_label = normalize_optional_text(config.reciter_name) or ""
+    hook_title = normalize_optional_text(config.title_text)
+
+    def append_distinct_segment(base_value: str, segment: str, *, max_length: int) -> str:
+        cleaned_segment = " ".join(segment.split()).strip()
+        if not cleaned_segment:
+            return base_value
+        if cleaned_segment.lower() in base_value.lower():
+            return base_value
+        candidate = f"{base_value} | {cleaned_segment}"
+        return candidate if len(candidate) <= max_length else base_value
+
+    preferred_title = f"{surah_label} | {verse_label}" if verse_label else surah_label
+    preferred_title = append_distinct_segment(preferred_title, reciter_label, max_length=92)
+
+    if hook_title:
+        hook_title = append_distinct_segment(hook_title, verse_label, max_length=92)
+        hook_title = append_distinct_segment(hook_title, reciter_label, max_length=92)
+        base_title = hook_title
+    else:
+        base_title = preferred_title
+
     shorts_suffix = " #Shorts"
     if "#shorts" not in base_title.lower() and len(base_title) + len(shorts_suffix) <= 100:
         base_title += shorts_suffix
     return base_title[:100].strip()
 
 
+def build_youtube_hashtags(config: RenderConfig) -> list[str]:
+    surah_label = normalize_optional_text(config.surah_name) or "Quran"
+    surah_base = re.sub(r"(?i)^surah\s+", "", surah_label).strip() or surah_label
+    reciter_label = normalize_optional_text(config.reciter_name) or ""
+
+    def make_hashtag(value: str, *, prefix: str = "", limit_words: int = 4) -> str | None:
+        words = re.findall(r"[A-Za-z0-9]+", value)
+        if prefix:
+            words = re.findall(r"[A-Za-z0-9]+", prefix) + words
+        if not words:
+            return None
+        token = "".join(word[:1].upper() + word[1:] for word in words[:limit_words])
+        return f"#{token}" if token else None
+
+    raw_hashtags = [
+        "#Shorts",
+        "#Quran",
+        "#QuranShorts",
+        "#QuranRecitation",
+        make_hashtag(surah_base, prefix="Surah"),
+        make_hashtag(reciter_label),
+    ]
+    deduped_hashtags: list[str] = []
+    for hashtag in raw_hashtags:
+        cleaned_hashtag = normalize_optional_text(hashtag)
+        if cleaned_hashtag is None:
+            continue
+        if cleaned_hashtag.lower() in {existing.lower() for existing in deduped_hashtags}:
+            continue
+        deduped_hashtags.append(cleaned_hashtag)
+    return deduped_hashtags[:6]
+
+
 def build_youtube_tags(config: RenderConfig, extra_tags: tuple[str, ...]) -> list[str]:
+    surah_label = normalize_optional_text(config.surah_name) or ""
+    surah_base = re.sub(r"(?i)^surah\s+", "", surah_label).strip()
+    reciter_label = normalize_optional_text(config.reciter_name) or ""
     raw_tags = [
         "quran",
         "shorts",
         "quran shorts",
+        "quran recitation",
+        "islam",
+        "islamic shorts",
         config.surah_name,
+        surah_base,
         config.verse_reference,
-        config.reciter_name or "",
+        f"{surah_base} quran" if surah_base else "",
+        reciter_label,
+        *(hashtag.lstrip("#") for hashtag in build_youtube_hashtags(config)),
         *extra_tags,
     ]
     deduped_tags: list[str] = []
@@ -798,6 +863,7 @@ def build_youtube_tags(config: RenderConfig, extra_tags: tuple[str, ...]) -> lis
 
 
 def build_youtube_description(config: RenderConfig) -> str:
+    hashtags_line = " ".join(build_youtube_hashtags(config))
     lines = [
         build_youtube_title(config).replace(" #Shorts", ""),
         "",
@@ -806,9 +872,11 @@ def build_youtube_description(config: RenderConfig) -> str:
     ]
     if config.reciter_name:
         lines.append(f"Reciter: {config.reciter_name}")
+    if config.verse_text:
+        lines.extend(["", "Arabic:", config.verse_text.strip()])
     if config.translation:
-        lines.extend(["", config.translation.strip()])
-    lines.extend(["", "#Shorts #Quran"])
+        lines.extend(["", "Meaning:", config.translation.strip()])
+    lines.extend(["", "Listen, reflect, and share khayr.", "", hashtags_line])
     return "\n".join(lines).strip()
 
 
