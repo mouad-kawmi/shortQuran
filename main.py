@@ -16,7 +16,7 @@ import sys
 import tempfile
 import textwrap
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
@@ -27,9 +27,9 @@ from urllib.request import Request, urlopen
 VIDEO_WIDTH = 1080
 VIDEO_HEIGHT = 1920
 DEFAULT_FPS = 30
-DEFAULT_TARGET_DURATION = 60.0
-AUTO_MIN_DURATION = 48.0
-AUTO_DURATION_OVERSHOOT_TOLERANCE = 8.0
+DEFAULT_TARGET_DURATION = 24.0
+AUTO_MIN_DURATION = 16.0
+AUTO_DURATION_OVERSHOOT_TOLERANCE = 4.0
 QURAN_API_BASE_URL = "https://api.quran.com/api/v4"
 PUBLIC_TRANSLATION_API_BASE_URL = "https://api.alquran.cloud/v1"
 DEFAULT_TRANSLATION_ID = 131
@@ -50,8 +50,8 @@ AUTO_TITLE_TEMPLATES = {
     "focus": "Quran Short | {chapter_name}",
     "ayah": "{chapter_name} | Ayat {verse_range_label}",
 }
-AUTO_MIN_TARGET_SECONDS = 46.0
-AUTO_MAX_TARGET_SECONDS = 64.0
+AUTO_MIN_TARGET_SECONDS = 18.0
+AUTO_MAX_TARGET_SECONDS = 30.0
 AUTO_RECENT_CHAPTER_WINDOW = 6
 AUTO_RECENT_RECITER_WINDOW = 3
 AUTO_RECENT_BACKGROUND_WINDOW = 6
@@ -357,6 +357,19 @@ class TikTokClientConfig:
 class FacebookPageConfig:
     page_access_token: str
     api_version: str = DEFAULT_FACEBOOK_API_VERSION
+    reciter_key: str | None = None
+    recitation_relative_path: str | None = None
+    reciter_name: str | None = None
+    audio_base_url: str = VERSES_AUDIO_BASE_URL
+    chapter_audio_overrides: dict[int, "FacebookChapterAudioOverride"] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class FacebookChapterAudioOverride:
+    audio_path: Path | None = None
+    audio_url: str | None = None
+    reciter_name: str | None = None
+    verse_durations: tuple[float, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -707,8 +720,8 @@ def build_auto_combo_key(chapter_number: int, verse_start: int, verse_end: int, 
 
 
 def choose_auto_target_seconds(target_seconds: float, history_entries: list[dict[str, object]]) -> float:
-    minimum = max(AUTO_MIN_TARGET_SECONDS, target_seconds - 12.0)
-    maximum = min(AUTO_MAX_TARGET_SECONDS, target_seconds + 4.0)
+    minimum = max(AUTO_MIN_TARGET_SECONDS, target_seconds - 6.0)
+    maximum = min(AUTO_MAX_TARGET_SECONDS, target_seconds + 2.0)
     if minimum > maximum:
         minimum = maximum = max(AUTO_MIN_TARGET_SECONDS, min(AUTO_MAX_TARGET_SECONDS, target_seconds))
 
@@ -841,6 +854,64 @@ def build_facebook_upload_options(args: argparse.Namespace, base_dir: Path) -> F
     )
 
 
+def parse_facebook_chapter_audio_overrides(
+    config_dir: Path,
+    value: object,
+) -> dict[int, FacebookChapterAudioOverride]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise RuntimeError("facebook chapter_audio_overrides must be a JSON object keyed by surah number.")
+
+    overrides: dict[int, FacebookChapterAudioOverride] = {}
+    for raw_key, raw_override in value.items():
+        try:
+            chapter_number = int(str(raw_key).strip())
+        except ValueError as error:
+            raise RuntimeError(f"Facebook chapter_audio_overrides key '{raw_key}' must be a surah number.") from error
+
+        if chapter_number <= 0:
+            raise RuntimeError("Facebook chapter_audio_overrides surah numbers must be greater than zero.")
+        if not isinstance(raw_override, dict):
+            raise RuntimeError(f"Facebook chapter_audio_overrides[{chapter_number}] must be a JSON object.")
+
+        audio_path = resolve_optional_local_path(config_dir, raw_override.get("audio_path"))
+        audio_url = normalize_optional_text(raw_override.get("audio_url"))
+        if audio_path is None and audio_url is None:
+            raise RuntimeError(
+                f"Facebook chapter_audio_overrides[{chapter_number}] must include either audio_path or audio_url."
+            )
+
+        raw_durations = raw_override.get("verse_durations")
+        if not isinstance(raw_durations, list) or not raw_durations:
+            raise RuntimeError(
+                f"Facebook chapter_audio_overrides[{chapter_number}] must include a non-empty verse_durations list."
+            )
+
+        verse_durations: list[float] = []
+        for index, item in enumerate(raw_durations, start=1):
+            try:
+                duration = float(item)
+            except (TypeError, ValueError) as error:
+                raise RuntimeError(
+                    f"Facebook chapter_audio_overrides[{chapter_number}].verse_durations[{index}] must be numeric."
+                ) from error
+            if duration <= 0:
+                raise RuntimeError(
+                    f"Facebook chapter_audio_overrides[{chapter_number}].verse_durations[{index}] must be > 0."
+                )
+            verse_durations.append(duration)
+
+        overrides[chapter_number] = FacebookChapterAudioOverride(
+            audio_path=audio_path,
+            audio_url=audio_url,
+            reciter_name=normalize_optional_text(raw_override.get("reciter_name")),
+            verse_durations=tuple(verse_durations),
+        )
+
+    return overrides
+
+
 def load_tiktok_client_config(config_path: Path) -> TikTokClientConfig:
     if not config_path.exists():
         raise FileNotFoundError(
@@ -892,9 +963,17 @@ def load_facebook_page_config(config_path: Path) -> FacebookPageConfig:
     if not re.fullmatch(r"v\d+\.\d+", api_version):
         raise RuntimeError("Facebook api_version must look like v24.0.")
 
+    audio_base_url = normalize_optional_text(payload.get("audio_base_url")) or VERSES_AUDIO_BASE_URL
+    chapter_audio_overrides = parse_facebook_chapter_audio_overrides(config_path.parent, payload.get("chapter_audio_overrides"))
+
     return FacebookPageConfig(
         page_access_token=require_non_empty_text(payload.get("page_access_token", ""), "facebook page_access_token"),
         api_version=api_version,
+        reciter_key=normalize_optional_text(payload.get("reciter_key")),
+        recitation_relative_path=normalize_optional_text(payload.get("recitation_relative_path")),
+        reciter_name=normalize_optional_text(payload.get("reciter_name")),
+        audio_base_url=audio_base_url,
+        chapter_audio_overrides=chapter_audio_overrides,
     )
 
 
@@ -1300,8 +1379,9 @@ def upload_video_to_facebook(
     video_path: Path,
     config: RenderConfig,
     options: FacebookUploadOptions,
+    page_config: FacebookPageConfig | None = None,
 ) -> dict[str, str]:
-    page_config = load_facebook_page_config(options.config_file)
+    page_config = page_config or load_facebook_page_config(options.config_file)
     create_payload = request_json(
         build_facebook_graph_url(
             page_config.api_version,
@@ -1832,13 +1912,216 @@ def find_windows_binary(binary_name: str) -> Path | None:
     return None
 
 
-def build_verse_audio_url(relative_path: str, surah_number: int, ayah_number: int) -> str:
+def build_verse_audio_url(
+    relative_path: str,
+    surah_number: int,
+    ayah_number: int,
+    *,
+    base_url: str = VERSES_AUDIO_BASE_URL,
+) -> str:
     cleaned_relative_path = relative_path.strip().strip("/")
     if not cleaned_relative_path:
         raise ValueError("'recitation_relative_path' cannot be empty")
 
+    cleaned_base_url = require_non_empty_text(base_url, "audio_base_url").rstrip("/")
     verse_code = f"{surah_number:03d}{ayah_number:03d}.mp3"
-    return f"{VERSES_AUDIO_BASE_URL}{cleaned_relative_path}/{verse_code}"
+    return f"{cleaned_base_url}/{cleaned_relative_path}/{verse_code}"
+
+
+VERSE_REFERENCE_RANGE_PATTERN = re.compile(r"^\s*(\d+)\s*:\s*(\d+)(?:\s*-\s*(\d+))?\s*$")
+
+
+def parse_verse_reference_range(verse_reference: str) -> tuple[int, int, int]:
+    match = VERSE_REFERENCE_RANGE_PATTERN.fullmatch(verse_reference.strip())
+    if match is None:
+        raise ValueError(
+            "Facebook audio overrides require a numeric verse_reference like '99:1' or '99:1-8'."
+        )
+
+    chapter_number = int(match.group(1))
+    verse_start = int(match.group(2))
+    verse_end = int(match.group(3) or verse_start)
+    if verse_end < verse_start:
+        raise ValueError("verse_reference range cannot end before it starts.")
+    return chapter_number, verse_start, verse_end
+
+
+def resolve_facebook_recitation_source(page_config: FacebookPageConfig) -> tuple[str, str | None] | None:
+    explicit_relative_path = normalize_optional_text(page_config.recitation_relative_path)
+    if explicit_relative_path:
+        return explicit_relative_path, normalize_optional_text(page_config.reciter_name)
+
+    reciter_key = normalize_optional_text(page_config.reciter_key)
+    if reciter_key is None:
+        return None
+
+    source = get_builtin_recitation_source(reciter_key)
+    return source.relative_path, normalize_optional_text(page_config.reciter_name) or source.reciter_name
+
+
+def build_facebook_timed_segments(
+    config: RenderConfig,
+    verse_durations: list[float],
+) -> list[TimedSegment] | None:
+    if config.timed_segments is None:
+        return None
+
+    if len(config.timed_segments) != len(verse_durations):
+        raise RuntimeError(
+            "Facebook audio override requires one timed segment per verse so timings can be rebuilt cleanly."
+        )
+
+    rebuilt_segments: list[TimedSegment] = []
+    cursor = 0.0
+    for template_segment, duration in zip(config.timed_segments, verse_durations):
+        rebuilt_segments.append(
+            TimedSegment(
+                arabic=template_segment.arabic,
+                translation=template_segment.translation,
+                start_time=cursor,
+                end_time=cursor + duration,
+            )
+        )
+        cursor += duration
+    return rebuilt_segments
+
+
+def resolve_facebook_override_audio_path(
+    chapter_override: FacebookChapterAudioOverride,
+    *,
+    cache_dir: Path,
+) -> Path:
+    if chapter_override.audio_path is not None:
+        if not chapter_override.audio_path.exists():
+            raise FileNotFoundError(f"Facebook chapter audio file not found: {chapter_override.audio_path}")
+        return chapter_override.audio_path
+    if chapter_override.audio_url is not None:
+        return download_asset(chapter_override.audio_url, cache_dir / "facebook_chapter_audio", "audio")
+    raise RuntimeError("Facebook chapter audio override is missing both audio_path and audio_url.")
+
+
+def trim_audio_segment(
+    input_path: Path,
+    output_path: Path,
+    *,
+    start_time: float,
+    end_time: float,
+    ffmpeg_command: str,
+) -> Path:
+    if end_time <= start_time:
+        raise RuntimeError("Facebook chapter audio timings produced an empty clip.")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    command = [
+        ffmpeg_command,
+        "-y",
+        "-ss",
+        f"{start_time:.3f}",
+        "-to",
+        f"{end_time:.3f}",
+        "-i",
+        str(input_path),
+        "-vn",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "192k",
+        str(output_path),
+    ]
+    subprocess.run(command, check=True)
+    return output_path
+
+
+def build_facebook_render_config_from_chapter_audio(
+    config: RenderConfig,
+    *,
+    chapter_override: FacebookChapterAudioOverride,
+    chapter_number: int,
+    verse_start: int,
+    verse_end: int,
+    base_dir: Path,
+) -> RenderConfig:
+    if verse_end > len(chapter_override.verse_durations):
+        raise RuntimeError(
+            f"Facebook chapter_audio_overrides[{chapter_number}] does not cover verse {verse_end}."
+        )
+
+    cache_dir = (base_dir / DEFAULT_CACHE_DIR).resolve()
+    ffmpeg_command = resolve_binary_command("ffmpeg")
+    chapter_audio_path = resolve_facebook_override_audio_path(chapter_override, cache_dir=cache_dir)
+    verse_durations = list(chapter_override.verse_durations[verse_start - 1 : verse_end])
+    clip_start = sum(chapter_override.verse_durations[: verse_start - 1])
+    clip_end = sum(chapter_override.verse_durations[:verse_end])
+    facebook_audio_path = cache_dir / "compiled_audio" / f"{config.output_path.stem}-facebook-audio.m4a"
+    facebook_output_path = config.output_path.with_name(f"{config.output_path.stem}-facebook{config.output_path.suffix}")
+    trim_audio_segment(
+        chapter_audio_path,
+        facebook_audio_path,
+        start_time=clip_start,
+        end_time=clip_end,
+        ffmpeg_command=ffmpeg_command,
+    )
+
+    return replace(
+        config,
+        audio_path=facebook_audio_path,
+        output_path=facebook_output_path,
+        reciter_name=chapter_override.reciter_name or config.reciter_name,
+        timed_segments=build_facebook_timed_segments(config, verse_durations),
+    )
+
+
+def build_facebook_render_config(
+    config: RenderConfig,
+    *,
+    page_config: FacebookPageConfig,
+    base_dir: Path,
+) -> RenderConfig:
+    chapter_number, verse_start, verse_end = parse_verse_reference_range(config.verse_reference)
+    chapter_override = page_config.chapter_audio_overrides.get(chapter_number)
+    if chapter_override is not None:
+        return build_facebook_render_config_from_chapter_audio(
+            config,
+            chapter_override=chapter_override,
+            chapter_number=chapter_number,
+            verse_start=verse_start,
+            verse_end=verse_end,
+            base_dir=base_dir,
+        )
+
+    recitation_source = resolve_facebook_recitation_source(page_config)
+    if recitation_source is None:
+        return config
+
+    relative_path, override_reciter_name = recitation_source
+    cache_dir = (base_dir / DEFAULT_CACHE_DIR).resolve()
+    ffmpeg_command = resolve_binary_command("ffmpeg")
+    ffprobe_command = resolve_binary_command("ffprobe")
+    verse_audio_paths: list[Path] = []
+    verse_durations: list[float] = []
+
+    for ayah_number in range(verse_start, verse_end + 1):
+        audio_url = build_verse_audio_url(
+            relative_path,
+            chapter_number,
+            ayah_number,
+            base_url=page_config.audio_base_url,
+        )
+        audio_path = download_asset(audio_url, cache_dir / "facebook_audio", "audio")
+        verse_audio_paths.append(audio_path)
+        verse_durations.append(probe_duration(audio_path, ffprobe_command))
+
+    facebook_audio_path = cache_dir / "compiled_audio" / f"{config.output_path.stem}-facebook-audio.m4a"
+    concatenate_audio_files(verse_audio_paths, facebook_audio_path, ffmpeg_command)
+    facebook_output_path = config.output_path.with_name(f"{config.output_path.stem}-facebook{config.output_path.suffix}")
+
+    return replace(
+        config,
+        audio_path=facebook_audio_path,
+        output_path=facebook_output_path,
+        reciter_name=override_reciter_name or config.reciter_name,
+        timed_segments=build_facebook_timed_segments(config, verse_durations),
+    )
 
 
 def sanitize_filename_part(value: str) -> str:
@@ -2152,8 +2435,8 @@ def collect_auto_verses(
     if verses_count <= 0:
         raise ValueError("Chapter does not contain any verses.")
 
-    minimum_duration = min(AUTO_MIN_DURATION, max(12.0, target_seconds * 0.75))
-    estimated_verses_needed = max(6, int(target_seconds // 5) + 2)
+    minimum_duration = min(AUTO_MIN_DURATION, max(10.0, target_seconds * 0.68))
+    estimated_verses_needed = max(3, int(target_seconds // 6) + 1)
     max_start = max(1, verses_count - estimated_verses_needed + 1)
     start_ayah = random.randint(1, max_start)
     current_ayah = start_ayah
@@ -2459,11 +2742,11 @@ def choose_arabic_words_per_line(text: str, *, is_cinematic: bool) -> int:
     word_count = len([word for word in text.split() if word.strip()])
     if not is_cinematic:
         return 5
-    if word_count <= 4:
+    if word_count <= 5:
+        return 5
+    if word_count <= 10:
         return 4
-    if word_count <= 8:
-        return 4
-    return 3
+    return 4
 
 
 def resolve_arabic_text_metrics(line_count: int, *, is_cinematic: bool) -> tuple[int, int]:
@@ -2471,12 +2754,12 @@ def resolve_arabic_text_metrics(line_count: int, *, is_cinematic: bool) -> tuple
         return 88, 24
 
     if line_count >= 5:
-        return 74, 34
-    if line_count == 4:
         return 80, 30
+    if line_count == 4:
+        return 88, 28
     if line_count == 3:
-        return 86, 26
-    return 92, 22
+        return 96, 24
+    return 108, 20
 
 
 def resolve_text_stack_positions(
@@ -2623,8 +2906,8 @@ def build_text_block_filters(
 
 
 def build_alpha_expression(duration: float) -> str:
-    fade_in = min(0.6, max(0.2, duration * 0.12))
-    fade_out = min(0.8, max(0.3, duration * 0.15))
+    fade_in = min(0.35, max(0.12, duration * 0.04))
+    fade_out = min(0.5, max(0.18, duration * 0.07))
     fade_out_start = max(fade_in, duration - fade_out)
 
     return (
@@ -2681,19 +2964,19 @@ def create_text_assets(config: RenderConfig, temp_dir: Path) -> dict[str, list[P
     title_value = config.title_text or f"{config.surah_name} | {config.verse_reference}"
     meta_text = ""
     if config.show_meta:
-        meta_value = title_value
-        if config.reciter_name:
-            if is_cinematic:
-                meta_value = f"{title_value}\n{config.reciter_name}"
-            else:
+        if is_cinematic:
+            meta_value = f"{config.surah_name} | {config.verse_reference}"
+        else:
+            meta_value = title_value
+            if config.reciter_name:
                 meta_value = f"{title_value}\nReciter: {config.reciter_name}"
-        meta_text = wrap_text(meta_value, width=30 if is_cinematic else 36)
+        meta_text = wrap_text(meta_value, width=24 if is_cinematic else 36)
 
     verse_text = wrap_arabic_text(
         config.verse_text,
         words_per_line=choose_arabic_words_per_line(config.verse_text, is_cinematic=is_cinematic),
     )
-    translation_text = wrap_text(config.translation, width=30 if is_cinematic else 34) if config.translation else ""
+    translation_text = wrap_text(config.translation, width=26 if is_cinematic else 34) if config.translation else ""
     brand_text = wrap_text(config.brand_text, width=24 if is_cinematic else 32) if config.show_brand else ""
 
     assets = {
@@ -2770,22 +3053,25 @@ def build_filter_complex(
 ) -> str:
     is_cinematic = is_cinematic_style(config.style_preset)
     cinematic_variant = get_cinematic_variant(config.style_preset)
-    cinematic_meta_top = 98 if cinematic_variant == "compact" else 138 if cinematic_variant == "spacious" else 120
-    cinematic_meta_font_size = 28 if cinematic_variant == "compact" else 32 if cinematic_variant == "spacious" else 30
-    cinematic_arabic_offset = 210 if cinematic_variant == "compact" else 145 if cinematic_variant == "spacious" else 180
-    cinematic_translation_top = 1040 if cinematic_variant == "compact" else 1090 if cinematic_variant == "spacious" else 1020
-    cinematic_image_blur = 7 if cinematic_variant == "compact" else 4 if cinematic_variant == "spacious" else 6
-    cinematic_video_blur = 5 if cinematic_variant == "compact" else 3 if cinematic_variant == "spacious" else 4
-    cinematic_overlay_alpha = "0.48" if cinematic_variant == "compact" else "0.34" if cinematic_variant == "spacious" else "0.42"
-    cinematic_brightness = "-0.26" if cinematic_variant == "compact" else "-0.17" if cinematic_variant == "spacious" else "-0.22"
-    cinematic_video_brightness = "-0.28" if cinematic_variant == "compact" else "-0.19" if cinematic_variant == "spacious" else "-0.24"
+    cinematic_meta_top = 78 if cinematic_variant == "compact" else 112 if cinematic_variant == "spacious" else 92
+    cinematic_meta_font_size = 26 if cinematic_variant == "compact" else 30 if cinematic_variant == "spacious" else 28
+    cinematic_arabic_offset = 160 if cinematic_variant == "compact" else 110 if cinematic_variant == "spacious" else 132
+    cinematic_translation_top = 1110 if cinematic_variant == "compact" else 1160 if cinematic_variant == "spacious" else 1125
+    cinematic_image_blur = 4 if cinematic_variant == "compact" else 2 if cinematic_variant == "spacious" else 3
+    cinematic_video_blur = 3 if cinematic_variant == "compact" else 1 if cinematic_variant == "spacious" else 2
+    cinematic_overlay_alpha = "0.30" if cinematic_variant == "compact" else "0.18" if cinematic_variant == "spacious" else "0.24"
+    cinematic_brightness = "-0.08" if cinematic_variant == "compact" else "-0.02" if cinematic_variant == "spacious" else "-0.05"
+    cinematic_video_brightness = "-0.10" if cinematic_variant == "compact" else "-0.03" if cinematic_variant == "spacious" else "-0.06"
 
     if background_kind == "image":
         if is_cinematic:
             base_filter = (
                 "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,"
-                "crop=1080:1920,format=yuv420p,"
-                f"eq=saturation=0.88:brightness={cinematic_brightness},"
+                "crop=1080:1920:"
+                "x='max(0,min(in_w-out_w,(in_w-out_w)/2+sin(n/90)*16))':"
+                "y='max(0,min(in_h-out_h,(in_h-out_h)/2+cos(n/120)*12))',"
+                "format=yuv420p,"
+                f"eq=saturation=1.05:brightness={cinematic_brightness},"
                 f"gblur=sigma={cinematic_image_blur},"
                 "vignette=PI/8,"
                 f"drawbox=x=0:y=0:w=iw:h=ih:color=black@{cinematic_overlay_alpha}:t=fill"
@@ -2804,7 +3090,7 @@ def build_filter_complex(
             base_filter = (
                 "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,"
                 "crop=1080:1920,format=yuv420p,"
-                f"eq=saturation=0.88:brightness={cinematic_video_brightness},"
+                f"eq=saturation=1.02:brightness={cinematic_video_brightness},"
                 f"gblur=sigma={cinematic_video_blur},"
                 "vignette=PI/8,"
                 f"drawbox=x=0:y=0:w=iw:h=ih:color=black@{cinematic_overlay_alpha}:t=fill"
@@ -2822,10 +3108,11 @@ def build_filter_complex(
         if is_cinematic:
             base_filter = (
                 "[0:v]format=yuv420p,"
-                "drawbox=x=0:y=0:w=iw:h=ih:color=0x120f1f@1:t=fill,"
-                "drawbox=x=0:y=0:w=iw:h=ih:color=0x000000@0.28:t=fill,"
-                "gblur=sigma=55,"
-                "eq=saturation=0.82:brightness=-0.10,"
+                "drawbox=x=-120:y=180:w=640:h=640:color=0x275c88@0.18:t=fill,"
+                "drawbox=x=440:y=1220:w=760:h=440:color=0x497a58@0.16:t=fill,"
+                "drawbox=x=0:y=0:w=iw:h=ih:color=0x05070a@0.24:t=fill,"
+                "gblur=sigma=52,"
+                "eq=saturation=1.02:brightness=-0.03,"
                 "vignette=PI/7"
                 "[base]"
             )
@@ -2877,7 +3164,7 @@ def build_filter_complex(
                 len(segment_asset.arabic_lines),
                 is_cinematic=is_cinematic,
             )
-            translation_font_size = 42 if is_cinematic else 44
+            translation_font_size = 48 if is_cinematic else 44
             translation_line_spacing = 12 if is_cinematic else 12
             arabic_block_height = (len(segment_asset.arabic_lines) * (arabic_font_size + arabic_line_spacing)) - arabic_line_spacing
             preferred_arabic_top = ((VIDEO_HEIGHT - arabic_block_height) / 2) - (cinematic_arabic_offset if is_cinematic else 100)
@@ -2951,7 +3238,7 @@ def build_filter_complex(
                 len(segment_asset.arabic_lines),
                 is_cinematic=is_cinematic,
             )
-            translation_font_size = 42 if is_cinematic else 44
+            translation_font_size = 48 if is_cinematic else 44
             translation_line_spacing = 12 if is_cinematic else 12
             arabic_block_height = (len(segment_asset.arabic_lines) * (arabic_font_size + arabic_line_spacing)) - arabic_line_spacing
             preferred_arabic_top = ((VIDEO_HEIGHT - arabic_block_height) / 2) - (cinematic_arabic_offset if is_cinematic else 100)
@@ -3015,7 +3302,7 @@ def build_filter_complex(
             len(text_assets["verse"]),
             is_cinematic=is_cinematic,
         )
-        translation_font_size = 42 if is_cinematic else 40
+        translation_font_size = 48 if is_cinematic else 40
         translation_line_spacing = 12 if is_cinematic else 14
         verse_block_height = (len(text_assets["verse"]) * (verse_font_size + verse_line_spacing)) - verse_line_spacing
         preferred_verse_top = ((VIDEO_HEIGHT - verse_block_height) / 2) - (cinematic_arabic_offset if is_cinematic else 110)
@@ -3186,12 +3473,14 @@ def main() -> int:
     base_dir = Path.cwd()
     youtube_options = None
     facebook_options = None
+    facebook_page_config = None
     tiktok_options = None
     try:
         if args.youtube_upload or args.youtube_auth_only:
             youtube_options = build_youtube_upload_options(args, base_dir)
         if args.facebook_upload:
             facebook_options = build_facebook_upload_options(args, base_dir)
+            facebook_page_config = load_facebook_page_config(facebook_options.config_file)
         if args.tiktok_upload or args.tiktok_auth_only:
             tiktok_options = build_tiktok_upload_options(args, base_dir)
 
@@ -3249,11 +3538,22 @@ def main() -> int:
                         f"({youtube_upload_result['privacy_status']})"
                     )
                 if facebook_options is not None and args.facebook_upload:
-                    print(f"Uploading to Facebook Page: {config.output_path.name}")
+                    facebook_render_config = config
+                    if facebook_page_config is not None:
+                        facebook_render_config = build_facebook_render_config(
+                            config,
+                            page_config=facebook_page_config,
+                            base_dir=base_dir,
+                        )
+                        if facebook_render_config is not config:
+                            print(f"Rendering Facebook-specific version: {facebook_render_config.output_path.name}")
+                            render_video(facebook_render_config)
+                    print(f"Uploading to Facebook Page: {facebook_render_config.output_path.name}")
                     facebook_upload_result = upload_video_to_facebook(
-                        video_path=config.output_path,
-                        config=config,
+                        video_path=facebook_render_config.output_path,
+                        config=facebook_render_config,
                         options=facebook_options,
+                        page_config=facebook_page_config,
                     )
                     facebook_message = (
                         f"Uploaded to Facebook: video_id={facebook_upload_result['video_id']} "
@@ -3288,6 +3588,15 @@ def main() -> int:
                         config.auto_history_entry["facebook_video_id"] = facebook_upload_result["video_id"]
                         config.auto_history_entry["facebook_status"] = facebook_upload_result["status"]
                         config.auto_history_entry["facebook_video_state"] = facebook_upload_result["video_state"]
+                        if facebook_page_config is not None:
+                            facebook_recitation_source = resolve_facebook_recitation_source(facebook_page_config)
+                            if facebook_recitation_source is not None:
+                                config.auto_history_entry["facebook_reciter_name"] = (
+                                    facebook_page_config.reciter_name
+                                    or facebook_recitation_source[1]
+                                    or config.reciter_name
+                                    or ""
+                                )
                         if facebook_upload_result["watch_url"]:
                             config.auto_history_entry["facebook_watch_url"] = facebook_upload_result["watch_url"]
                     if tiktok_upload_result is not None:
