@@ -2402,7 +2402,15 @@ def build_facebook_render_config(
     page_config: FacebookPageConfig,
     base_dir: Path,
 ) -> RenderConfig:
-    chapter_number, verse_start, verse_end = parse_verse_reference_range(config.verse_reference)
+    merged_credit_lines = merge_credit_lines(config.facebook_credit_lines, page_config.credit_lines)
+    try:
+        chapter_number, verse_start, verse_end = parse_verse_reference_range(config.verse_reference)
+    except ValueError:
+        # Showcase/full-surah clips already have their audio prepared locally, so
+        # Facebook should reuse that clip instead of requiring verse-by-verse
+        # override timings.
+        return replace(config, facebook_credit_lines=merged_credit_lines)
+
     chapter_override = page_config.chapter_audio_overrides.get(chapter_number)
     if chapter_override is not None:
         return build_facebook_render_config_from_chapter_audio(
@@ -2417,7 +2425,7 @@ def build_facebook_render_config(
 
     recitation_source = resolve_facebook_recitation_source(page_config)
     if recitation_source is None:
-        return config
+        return replace(config, facebook_credit_lines=merged_credit_lines)
 
     relative_path, override_reciter_name = recitation_source
     cache_dir = (base_dir / DEFAULT_CACHE_DIR).resolve()
@@ -2447,7 +2455,7 @@ def build_facebook_render_config(
         output_path=facebook_output_path,
         reciter_name=override_reciter_name or config.reciter_name,
         timed_segments=build_facebook_timed_segments(config, verse_durations),
-        facebook_credit_lines=page_config.credit_lines,
+        facebook_credit_lines=merged_credit_lines,
     )
 
 
