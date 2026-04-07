@@ -297,5 +297,31 @@
     "facebook_video_id": "934252956250501",
     "facebook_status": "READY",
     "facebook_video_state": "PUBLISHED"
+  },
+  {
+    "created_at": "2026-04-07T20:55:14.847352+00:00",
+    "combo_key": "88:2-10:abdur-rahman-as-sudais",
+    "chapter_number": 88,
+    "chapter_name": "Al-Ghashiyah",
+    "verse_reference": "88:2-10",
+    "verse_start": 2,
+    "verse_end": 10,
+    "reciter_name": "Abdur-Rahman as-Sudais",
+    "attribution_lines": [],
+    "background_path": "/home/runner/work/shortQuran/shortQuran/backgroundPhoto/WhatsApp Image 2026-04-06 at 00.35.45 (1).jpeg",
+    "style_preset": "cinematic",
+    "title_template_key": "reference",
+    "title_text": "Al-Ghashiyah | 88:2-10",
+    "target_seconds": 30.0,
+    "planned_duration_seconds": 31.37,
+    "output_path": "/home/runner/work/shortQuran/shortQuran/outputs/auto-01-088-002-010-al-ghashiyah-abdur-rahman-as-su.mp4",
+    "rendered_at": "2026-04-07T20:57:22.427030+00:00",
+    "youtube_video_id": "UfrCSl0GCJo",
+    "youtube_watch_url": "https://www.youtube.com/watch?v=UfrCSl0GCJo",
+    "youtube_privacy_status": "public",
+    "uploaded_at": "2026-04-07T20:57:22.427049+00:00",
+    "facebook_video_id": "1005056905179210",
+    "facebook_status": "READY",
+    "facebook_video_state": "PUBLISHED"
   }
 ]
