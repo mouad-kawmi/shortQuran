@@ -304,6 +304,53 @@ with content like:
 }
 ```
 
+If Facebook keeps muting the default recitation, you can make Facebook render a second version with another verse-audio source just for Page uploads:
+
+```json
+{
+  "page_access_token": "YOUR_FACEBOOK_PAGE_ACCESS_TOKEN",
+  "api_version": "v24.0",
+  "reciter_key": "alafasy"
+}
+```
+
+Or point Facebook to your own licensed verse-audio library:
+
+```json
+{
+  "page_access_token": "YOUR_FACEBOOK_PAGE_ACCESS_TOKEN",
+  "api_version": "v24.0",
+  "audio_base_url": "https://example.com/quran-audio",
+  "recitation_relative_path": "licensed-reader/mp3",
+  "reciter_name": "Licensed Reader"
+}
+```
+
+When one of those Facebook audio override fields is present, the script keeps the normal render for YouTube/TikTok and creates a second Facebook-only render with rebuilt verse timings before uploading the Reel.
+
+If your licensed/Commons source is a whole-surah file instead of verse-by-verse MP3s, you can also map specific short surahs in the Facebook config and provide verse durations so the script can cut just the selected verse range:
+
+```json
+{
+  "page_access_token": "YOUR_FACEBOOK_PAGE_ACCESS_TOKEN",
+  "api_version": "v24.0",
+  "chapter_audio_overrides": {
+    "99": {
+      "audio_url": "https://example.com/zalzalah.ogg",
+      "reciter_name": "Licensed Reader",
+      "verse_durations": [2.9, 2.8, 2.6, 2.4, 2.7, 2.8, 2.5, 3.1]
+    },
+    "103": {
+      "audio_path": "./licensed-audio/asr.ogg",
+      "reciter_name": "Licensed Reader",
+      "verse_durations": [2.4, 3.0, 3.1]
+    }
+  }
+}
+```
+
+Use one `verse_durations` number per ayah in that surah, in order. When a generated short lands on one of those surahs, Facebook will trim the whole-surah audio to the exact ayah range and rebuild timings from that duration list.
+
 To get that Page Access Token, Meta's official Facebook API collection shows two common options:
 
 - `GET /me/accounts?fields=name,access_token,tasks&access_token={user_access_token}`

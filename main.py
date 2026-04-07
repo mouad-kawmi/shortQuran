@@ -5,6 +5,7 @@ import html
 import hashlib
 import http.server
 import json
+import math
 import mimetypes
 import os
 import random
@@ -38,6 +39,8 @@ DEFAULT_AUTO_COUNT = 1
 DEFAULT_AUTO_STYLE_PRESET = "cinematic"
 DEFAULT_AUTO_CHAPTER_MIN = 67
 LOCAL_BACKGROUND_LIBRARY_DIRNAME = "backgroundPhoto"
+BISMILLAH_ARABIC = "بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ"
+BISMILLAH_TRANSLATION = "In the name of Allah, the Most Compassionate, the Most Merciful."
 AUTO_HISTORY_FILE = ".cache/auto_history.json"
 AUTO_STYLE_PRESETS = (
     "cinematic",
@@ -52,14 +55,18 @@ AUTO_TITLE_TEMPLATES = {
 }
 AUTO_MIN_TARGET_SECONDS = 18.0
 AUTO_MAX_TARGET_SECONDS = 30.0
+AUTO_MAX_WHOLE_SURAH_DURATION = 60.0
+AUTO_STATIC_WHOLE_SURAH_MAX_QURAN_VERSES = 4
 AUTO_RECENT_CHAPTER_WINDOW = 6
 AUTO_RECENT_RECITER_WINDOW = 3
 AUTO_RECENT_BACKGROUND_WINDOW = 6
 AUTO_RECENT_STYLE_WINDOW = 2
 AUTO_RECENT_TITLE_WINDOW = 3
+AUTO_RECENT_SHOWCASE_START_WINDOW = 4
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm"}
+LOCAL_AUDIO_EXTENSIONS = (".mp3", ".m4a", ".ogg", ".wav", ".flac")
 DEFAULT_CACHE_DIR = ".cache/downloads"
 DEFAULT_DOWNLOAD_EXTENSIONS = {
     "audio": ".mp3",
@@ -85,6 +92,10 @@ CONTENT_TYPE_EXTENSIONS = {
 }
 VERSES_AUDIO_BASE_URL = "https://verses.quran.foundation/"
 DEFAULT_ARABIC_FONT_URL = "https://raw.githubusercontent.com/google/fonts/main/ofl/amiri/Amiri-Regular.ttf"
+PEXELS_API_BASE_URL = "https://api.pexels.com/videos"
+DEFAULT_PEXELS_API_KEY_FILE = ".secrets/pexels-api-key.txt"
+PEXELS_NATURE_QUERIES = ("nature", "river mountains", "forest", "ocean waves", "rain forest", "sky clouds", "sunrise", "waterfall", "desert", "green nature")
+SHOWCASE_STYLE = "showcase"
 DEFAULT_BACKGROUND_URL = "https://upload.wikimedia.org/wikipedia/commons/6/65/Scenic_landscape.jpg"
 YOUTUBE_UPLOAD_SCOPE = "https://www.googleapis.com/auth/youtube.upload"
 DEFAULT_YOUTUBE_PRIVACY_STATUS = "private"
@@ -113,6 +124,7 @@ DEFAULT_TIKTOK_CLIENT_CONFIG_FILE = ".secrets/tiktok-client-config.json"
 DEFAULT_TIKTOK_TOKEN_FILE = ".secrets/tiktok-token.json"
 DEFAULT_TIKTOK_REDIRECT_HOST = "127.0.0.1"
 DEFAULT_TIKTOK_REDIRECT_PATH = "/callback/"
+DEFAULT_AUTO_RECITER_LIBRARY_FILE = ".secrets/auto-reciters.json"
 TIKTOK_PRIVACY_LEVEL_CHOICES = (
     "PUBLIC_TO_EVERYONE",
     "MUTUAL_FOLLOW_FRIENDS",
@@ -172,8 +184,18 @@ class AutoVerse:
 
 @dataclass(frozen=True)
 class AutoReciter:
-    recitation_id: int
     reciter_name: str
+    recitation_id: int | None = None
+    recitation_relative_path: str | None = None
+    audio_base_url: str = VERSES_AUDIO_BASE_URL
+    audio_base_dir: Path | None = None
+    download_script: Path | None = None
+    chapter_audio_files: dict[int, Path] = field(default_factory=dict)
+    auto_detect_whole_surah_files: bool = False
+    whole_surah_includes_basmala: bool = True
+    attribution_lines: tuple[str, ...] = ()
+    reciter_name_arabic: str | None = None
+    showcase_only: bool = False
 
 
 BUILTIN_VERSE_RECITATIONS = {
@@ -226,10 +248,15 @@ class RenderConfig:
     fps: int = DEFAULT_FPS
     word_segments: list[WordSegment] | None = None
     timed_segments: list[TimedSegment] | None = None
+    prefer_static_text_overlay: bool = False
     show_meta: bool = True
     show_brand: bool = True
     style_preset: str = "classic"
     auto_history_entry: dict[str, object] | None = None
+    attribution_lines: tuple[str, ...] = ()
+    facebook_credit_lines: tuple[str, ...] = ()
+    arabic_surah_name: str | None = None
+    arabic_reciter_name: str | None = None
 
     @classmethod
     def from_file(cls, config_path: Path) -> "RenderConfig":
@@ -330,6 +357,7 @@ class RenderConfig:
             show_meta=show_meta,
             show_brand=show_brand,
             style_preset=style_preset,
+            attribution_lines=parse_string_lines(payload.get("attribution_lines"), context="render attribution_lines"),
         )
 
 
@@ -362,6 +390,7 @@ class FacebookPageConfig:
     reciter_name: str | None = None
     audio_base_url: str = VERSES_AUDIO_BASE_URL
     chapter_audio_overrides: dict[int, "FacebookChapterAudioOverride"] = field(default_factory=dict)
+    credit_lines: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -398,6 +427,10 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=DEFAULT_TARGET_DURATION,
         help="Target duration for automatic videos.",
+    )
+    parser.add_argument(
+        "--auto-reciter-library-file",
+        help="Optional JSON file that restricts automatic mode to a custom reciter library, for example .secrets/auto-reciters.json.",
     )
     parser.add_argument("--youtube-upload", action="store_true", help="Upload rendered videos to YouTube after each successful render.")
     parser.add_argument("--youtube-auth-only", action="store_true", help="Run the one-time YouTube OAuth flow, save the token file, and exit.")
@@ -719,6 +752,65 @@ def build_auto_combo_key(chapter_number: int, verse_start: int, verse_end: int, 
     return f"{chapter_number}:{verse_start}-{verse_end}:{safe_reciter}"
 
 
+def choose_showcase_clip_window(
+    *,
+    history_entries: list[dict[str, object]],
+    chapter_number: int,
+    reciter_name: str,
+    source_duration: float,
+    clip_duration: float,
+) -> tuple[float, float]:
+    max_start = max(0.0, source_duration - clip_duration)
+    if max_start <= 0.05:
+        return 0.0, clip_duration
+
+    candidate_count = min(12, max(5, int(max_start // 8.0) + 1))
+    if candidate_count <= 1:
+        return 0.0, clip_duration
+
+    candidate_starts = [
+        round((max_start * index) / (candidate_count - 1), 3)
+        for index in range(candidate_count)
+    ]
+
+    recent_starts: list[float] = []
+    for entry in reversed(history_entries):
+        entry_chapter = entry.get("chapter_number")
+        entry_reciter = normalize_optional_text(entry.get("reciter_name")) or ""
+        entry_start = entry.get("clip_start_seconds")
+        try:
+            if int(entry_chapter or 0) != chapter_number:
+                continue
+            if entry_reciter != reciter_name:
+                continue
+            if entry_start is None:
+                continue
+            recent_starts.append(float(entry_start))
+        except (TypeError, ValueError):
+            continue
+        if len(recent_starts) >= AUTO_RECENT_SHOWCASE_START_WINDOW:
+            break
+
+    minimum_spacing = max(8.0, clip_duration * 0.35)
+    filtered_candidates = [
+        start
+        for start in candidate_starts
+        if all(abs(start - recent_start) >= minimum_spacing for recent_start in recent_starts)
+    ]
+    non_zero_candidates = [start for start in filtered_candidates if start > 0.5]
+    if non_zero_candidates:
+        chosen_start = random.choice(non_zero_candidates)
+    elif filtered_candidates:
+        chosen_start = random.choice(filtered_candidates)
+    else:
+        fallback_candidates = [start for start in candidate_starts if start > 0.5]
+        chosen_start = random.choice(fallback_candidates or candidate_starts)
+
+    chosen_end = min(source_duration, chosen_start + clip_duration)
+    chosen_start = max(0.0, chosen_end - clip_duration)
+    return round(chosen_start, 3), round(chosen_end, 3)
+
+
 def choose_auto_target_seconds(target_seconds: float, history_entries: list[dict[str, object]]) -> float:
     minimum = max(AUTO_MIN_TARGET_SECONDS, target_seconds - 6.0)
     maximum = min(AUTO_MAX_TARGET_SECONDS, target_seconds + 2.0)
@@ -912,6 +1004,25 @@ def parse_facebook_chapter_audio_overrides(
     return overrides
 
 
+def parse_string_lines(value: object, *, context: str) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        cleaned = " ".join(value.split()).strip()
+        return (cleaned,) if cleaned else ()
+    if not isinstance(value, list):
+        raise RuntimeError(f"{context} must be either a string or a JSON array of strings.")
+
+    lines: list[str] = []
+    for index, item in enumerate(value, start=1):
+        if not isinstance(item, str):
+            raise RuntimeError(f"{context}[{index}] must be a string.")
+        cleaned = " ".join(item.split()).strip()
+        if cleaned:
+            lines.append(cleaned)
+    return tuple(lines)
+
+
 def load_tiktok_client_config(config_path: Path) -> TikTokClientConfig:
     if not config_path.exists():
         raise FileNotFoundError(
@@ -974,6 +1085,7 @@ def load_facebook_page_config(config_path: Path) -> FacebookPageConfig:
         reciter_name=normalize_optional_text(payload.get("reciter_name")),
         audio_base_url=audio_base_url,
         chapter_audio_overrides=chapter_audio_overrides,
+        credit_lines=parse_string_lines(payload.get("credit_lines"), context="facebook credit_lines"),
     )
 
 
@@ -1261,10 +1373,25 @@ def resolve_tiktok_privacy_level(requested_level: str, creator_info: dict[str, o
     return options[0]
 
 
+def merge_credit_lines(*groups: tuple[str, ...]) -> tuple[str, ...]:
+    lines: list[str] = []
+    seen: set[str] = set()
+    for group in groups:
+        for line in group:
+            normalized = line.strip().lower()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            lines.append(line.strip())
+    return tuple(lines)
+
+
 def build_tiktok_caption(config: RenderConfig) -> str:
     lines = [build_youtube_title(config).replace(" #Shorts", "")]
     if config.reciter_name:
         lines.append(f"Reciter: {config.reciter_name}")
+    if config.attribution_lines:
+        lines.extend(["", *config.attribution_lines])
     hashtags = " ".join(build_youtube_hashtags(config))
     if hashtags:
         lines.extend(["", hashtags])
@@ -1275,8 +1402,12 @@ def build_facebook_reel_title(config: RenderConfig) -> str:
     return build_youtube_title(config).replace(" #Shorts", "")[:255].strip()
 
 
-def build_facebook_reel_description(config: RenderConfig) -> str:
-    return build_youtube_description(config)[:2200].strip()
+def build_facebook_reel_description(config: RenderConfig, page_config: FacebookPageConfig) -> str:
+    lines = [build_youtube_description(config)]
+    facebook_credit_lines = merge_credit_lines(config.attribution_lines, config.facebook_credit_lines)
+    if facebook_credit_lines:
+        lines.extend(["", *facebook_credit_lines])
+    return "\n".join(lines)[:2200].strip()
 
 
 def build_facebook_graph_url(api_version: str, path: str, params: dict[str, object]) -> str:
@@ -1409,7 +1540,7 @@ def upload_video_to_facebook(
                 "video_id": video_id,
                 "upload_phase": "finish",
                 "video_state": options.video_state,
-                "description": build_facebook_reel_description(config),
+                "description": build_facebook_reel_description(config, page_config),
                 "title": build_facebook_reel_title(config),
             },
         ),
@@ -1711,6 +1842,8 @@ def build_youtube_description(config: RenderConfig) -> str:
         lines.extend(["", "Arabic:", config.verse_text.strip()])
     if config.translation:
         lines.extend(["", "Meaning:", config.translation.strip()])
+    if config.attribution_lines:
+        lines.extend(["", *config.attribution_lines])
     lines.extend(["", "Listen, reflect, and share khayr.", "", hashtags_line])
     return "\n".join(lines).strip()
 
@@ -1832,6 +1965,196 @@ def normalize_reciter_key(value: str) -> str:
     while "__" in collapsed:
         collapsed = collapsed.replace("__", "_")
     return collapsed.strip("_")
+
+
+def normalize_lookup_text(value: str) -> str:
+    return "".join(character.lower() for character in value if character.isalnum())
+
+
+@lru_cache(maxsize=64)
+def list_local_audio_library_files(base_dir_str: str) -> tuple[str, ...]:
+    base_dir = Path(base_dir_str)
+    if not base_dir.exists():
+        return ()
+    return tuple(
+        str(candidate)
+        for candidate in sorted(base_dir.rglob("*"))
+        if candidate.is_file() and candidate.suffix.lower() in LOCAL_AUDIO_EXTENSIONS
+    )
+
+
+def candidate_matches_ayah(stem: str, ayah_number: int) -> bool:
+    escaped_number = re.escape(str(ayah_number))
+    lower_stem = stem.lower()
+    patterns = (
+        rf"(?:ayah|aya)\s*0*{escaped_number}(?!\d)",
+        rf"(?<!\d)0*{escaped_number}(?!\d)$",
+    )
+    return any(re.search(pattern, lower_stem) for pattern in patterns)
+
+
+def find_named_local_audio_file(
+    base_dir: Path,
+    *,
+    chapter_number: int,
+    chapter_name: str,
+    ayah_number: int,
+) -> Path | None:
+    chapter_token = normalize_lookup_text(chapter_name)
+    chapter_number_token = f"{chapter_number:03d}"
+    candidate_files = list_local_audio_library_files(str(base_dir.resolve()))
+    for candidate_str in candidate_files:
+        candidate = Path(candidate_str)
+        try:
+            relative_candidate = candidate.relative_to(base_dir)
+        except ValueError:
+            relative_candidate = candidate
+
+        lookup_parts = [normalize_lookup_text(part) for part in relative_candidate.parts[:-1]]
+        stem_lookup = normalize_lookup_text(candidate.stem)
+        chapter_match = any(
+            token and (chapter_token in token or token in {chapter_token, chapter_number_token, str(chapter_number)})
+            for token in lookup_parts
+        )
+        if not chapter_match and chapter_token:
+            chapter_match = chapter_token in stem_lookup
+        if not chapter_match:
+            continue
+        if candidate_matches_ayah(candidate.stem, ayah_number):
+            return candidate
+    return None
+
+
+def local_audio_chapter_available(reciter: AutoReciter, *, chapter_number: int, chapter_name: str) -> bool:
+    if reciter.audio_base_dir is None or reciter.recitation_id is not None:
+        return False
+
+    base_dir = reciter.audio_base_dir
+    if reciter.recitation_relative_path:
+        base_dir = base_dir / reciter.recitation_relative_path
+    if not base_dir.exists():
+        return False
+
+    verse_code = f"{chapter_number:03d}001"
+    for extension in LOCAL_AUDIO_EXTENSIONS:
+        if (base_dir / f"{verse_code}{extension}").exists():
+            return True
+    return find_named_local_audio_file(
+        base_dir,
+        chapter_number=chapter_number,
+        chapter_name=chapter_name,
+        ayah_number=1,
+    ) is not None
+
+
+def get_auto_reciter_whole_surah_files(reciter: AutoReciter) -> dict[int, Path]:
+    discovered_files = {
+        chapter_number: audio_path
+        for chapter_number, audio_path in reciter.chapter_audio_files.items()
+        if audio_path.exists()
+    }
+    if not reciter.auto_detect_whole_surah_files or reciter.audio_base_dir is None:
+        return discovered_files
+
+    base_dir = reciter.audio_base_dir
+    if reciter.recitation_relative_path:
+        base_dir = base_dir / reciter.recitation_relative_path
+    if not base_dir.exists():
+        return discovered_files
+
+    for extension in LOCAL_AUDIO_EXTENSIONS:
+        for candidate in base_dir.glob(f"*{extension}"):
+            if not candidate.is_file():
+                continue
+            stem = candidate.stem.strip()
+            if not re.fullmatch(r"\d{3}", stem):
+                continue
+            discovered_files.setdefault(int(stem), candidate)
+    return discovered_files
+
+
+def ensure_auto_reciter_source_material(reciter: AutoReciter) -> None:
+    if reciter.download_script is None:
+        return
+
+    if get_auto_reciter_whole_surah_files(reciter):
+        return
+
+    if reciter.audio_base_dir is not None:
+        base_dir = reciter.audio_base_dir
+        if reciter.recitation_relative_path:
+            base_dir = base_dir / reciter.recitation_relative_path
+        if base_dir.exists() and not reciter.showcase_only:
+            for extension in LOCAL_AUDIO_EXTENSIONS:
+                if any(base_dir.rglob(f"*{extension}")):
+                    return
+
+    print(f"[AutoReciter] Downloading source audio for {reciter.reciter_name}...")
+    try:
+        subprocess.run([sys.executable, str(reciter.download_script)], check=True)
+    except subprocess.CalledProcessError as error:
+        raise RuntimeError(
+            f"Failed to download source audio for '{reciter.reciter_name}' using {reciter.download_script}. "
+            "Make sure the downloader script works and that required tools like yt-dlp are installed."
+        ) from error
+
+
+def list_auto_reciter_downloadable_chapters(reciter: AutoReciter) -> dict[int, dict[str, object]]:
+    if reciter.download_script is None:
+        return {}
+
+    try:
+        process = subprocess.run(
+            [sys.executable, str(reciter.download_script), "--list-json"],
+            capture_output=True,
+            check=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except subprocess.CalledProcessError:
+        return {}
+
+    try:
+        payload = json.loads(process.stdout)
+    except json.JSONDecodeError:
+        return {}
+
+    if not isinstance(payload, dict):
+        return {}
+
+    discovered: dict[int, dict[str, object]] = {}
+    for raw_key, raw_value in payload.items():
+        try:
+            chapter_number = int(str(raw_key).strip())
+        except ValueError:
+            continue
+        if not isinstance(raw_value, dict):
+            continue
+        discovered[chapter_number] = raw_value
+    return discovered
+
+
+def ensure_auto_reciter_chapter_audio(reciter: AutoReciter, *, chapter_number: int) -> Path | None:
+    whole_surah_files = get_auto_reciter_whole_surah_files(reciter)
+    existing_audio = whole_surah_files.get(chapter_number)
+    if existing_audio is not None and existing_audio.exists():
+        return existing_audio
+
+    if reciter.download_script is None:
+        return None
+
+    try:
+        subprocess.run([sys.executable, str(reciter.download_script), str(chapter_number)], check=True)
+    except subprocess.CalledProcessError as error:
+        raise RuntimeError(
+            f"Failed to download chapter {chapter_number} for '{reciter.reciter_name}' using {reciter.download_script}."
+        ) from error
+
+    refreshed_audio = get_auto_reciter_whole_surah_files(reciter).get(chapter_number)
+    if refreshed_audio is not None and refreshed_audio.exists():
+        return refreshed_audio
+    return None
 
 
 def get_builtin_recitation_source(reciter_key: str) -> VerseRecitationSource:
@@ -2040,6 +2363,7 @@ def build_facebook_render_config_from_chapter_audio(
     verse_start: int,
     verse_end: int,
     base_dir: Path,
+    credit_lines: tuple[str, ...] = (),
 ) -> RenderConfig:
     if verse_end > len(chapter_override.verse_durations):
         raise RuntimeError(
@@ -2068,6 +2392,7 @@ def build_facebook_render_config_from_chapter_audio(
         output_path=facebook_output_path,
         reciter_name=chapter_override.reciter_name or config.reciter_name,
         timed_segments=build_facebook_timed_segments(config, verse_durations),
+        facebook_credit_lines=credit_lines,
     )
 
 
@@ -2087,6 +2412,7 @@ def build_facebook_render_config(
             verse_start=verse_start,
             verse_end=verse_end,
             base_dir=base_dir,
+            credit_lines=page_config.credit_lines,
         )
 
     recitation_source = resolve_facebook_recitation_source(page_config)
@@ -2121,6 +2447,7 @@ def build_facebook_render_config(
         output_path=facebook_output_path,
         reciter_name=override_reciter_name or config.reciter_name,
         timed_segments=build_facebook_timed_segments(config, verse_durations),
+        facebook_credit_lines=page_config.credit_lines,
     )
 
 
@@ -2255,6 +2582,7 @@ def fetch_public_translation_map(
 def clean_translation_text(text: str) -> str:
     without_tags = re.sub(r"<[^>]+>", "", text)
     cleaned = html.unescape(without_tags)
+    cleaned = re.sub(r"\[[^\]]+\]", "", cleaned)
     return " ".join(cleaned.split())
 
 
@@ -2296,6 +2624,311 @@ def fetch_auto_reciters() -> list[AutoReciter]:
     if not reciters:
         raise RuntimeError("No usable reciters were returned by Quran API.")
     return reciters
+
+
+def fetch_all_chapter_verses(
+    chapter_number: int,
+    *,
+    verses_count: int,
+    translation_id: int,
+) -> list[dict[str, object]]:
+    verse_pages = max(1, math.ceil(verses_count / 50))
+    verses: list[dict[str, object]] = []
+    for page in range(1, verse_pages + 1):
+        verses.extend(fetch_chapter_verses_page(chapter_number, page=page, translation_id=translation_id))
+    return verses
+
+
+def chapter_starts_with_basmala(chapter_number: int) -> bool:
+    return chapter_number not in {1, 9}
+
+
+def load_auto_reciters_from_library(library_path: Path) -> list[AutoReciter]:
+    if not library_path.exists():
+        raise FileNotFoundError(f"Auto reciter library file not found: {library_path}")
+
+    try:
+        payload = json.loads(library_path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise RuntimeError(f"Failed to read auto reciter library from {library_path}: {error}") from error
+
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"Auto reciter library at {library_path} must be a JSON object.")
+
+    raw_reciters = payload.get("reciters")
+    if not isinstance(raw_reciters, list) or not raw_reciters:
+        raise RuntimeError("Auto reciter library must include a non-empty 'reciters' array.")
+
+    reciters: list[AutoReciter] = []
+    for index, item in enumerate(raw_reciters, start=1):
+        if not isinstance(item, dict):
+            raise RuntimeError(f"auto reciters[{index}] must be a JSON object.")
+
+        reciter_name = require_non_empty_text(item.get("name", ""), f"auto reciters[{index}].name")
+        recitation_relative_path = normalize_optional_text(item.get("recitation_relative_path"))
+        recitation_id_value = item.get("recitation_id")
+        recitation_id = int(recitation_id_value) if recitation_id_value is not None else None
+        audio_base_url = normalize_optional_text(item.get("audio_base_url")) or VERSES_AUDIO_BASE_URL
+        audio_base_dir = resolve_optional_local_path(library_path.parent, item.get("audio_base_dir"))
+        download_script = resolve_optional_local_path(library_path.parent, item.get("download_script"))
+        if download_script is not None and not download_script.exists():
+            raise FileNotFoundError(
+                f"auto reciters[{index}].download_script was not found: {download_script}"
+            )
+        raw_auto_detect_whole_surah_files = item.get("auto_detect_whole_surah_files")
+        if raw_auto_detect_whole_surah_files is None:
+            auto_detect_whole_surah_files = False
+        elif isinstance(raw_auto_detect_whole_surah_files, bool):
+            auto_detect_whole_surah_files = raw_auto_detect_whole_surah_files
+        else:
+            raise RuntimeError(f"auto reciters[{index}].auto_detect_whole_surah_files must be true or false.")
+        raw_whole_surah_includes_basmala = item.get("whole_surah_includes_basmala")
+        if raw_whole_surah_includes_basmala is None:
+            whole_surah_includes_basmala = True
+        elif isinstance(raw_whole_surah_includes_basmala, bool):
+            whole_surah_includes_basmala = raw_whole_surah_includes_basmala
+        else:
+            raise RuntimeError(f"auto reciters[{index}].whole_surah_includes_basmala must be true or false.")
+        raw_chapter_audio_files = item.get("chapter_audio_files")
+        chapter_audio_files: dict[int, Path] = {}
+        if raw_chapter_audio_files is not None:
+            if not isinstance(raw_chapter_audio_files, dict):
+                raise RuntimeError(f"auto reciters[{index}].chapter_audio_files must be a JSON object.")
+            for raw_key, raw_value in raw_chapter_audio_files.items():
+                try:
+                    chapter_number = int(str(raw_key).strip())
+                except ValueError as error:
+                    raise RuntimeError(
+                        f"auto reciters[{index}].chapter_audio_files key '{raw_key}' must be a surah number."
+                    ) from error
+                chapter_audio_path = resolve_optional_local_path(library_path.parent, raw_value)
+                if chapter_audio_path is None:
+                    raise RuntimeError(
+                        f"auto reciters[{index}].chapter_audio_files[{chapter_number}] must point to a local file."
+                    )
+                if not chapter_audio_path.exists():
+                    raise FileNotFoundError(
+                        f"auto reciters[{index}].chapter_audio_files[{chapter_number}] was not found: {chapter_audio_path}"
+                    )
+                chapter_audio_files[chapter_number] = chapter_audio_path
+        attribution_lines = parse_string_lines(
+            item.get("attribution_lines"),
+            context=f"auto reciters[{index}].attribution_lines",
+        )
+        reciter_name_arabic = normalize_optional_text(item.get("reciter_name_arabic"))
+        showcase_only = bool(item.get("showcase_only", False))
+
+        has_whole_surah_source = bool(chapter_audio_files) or (auto_detect_whole_surah_files and audio_base_dir is not None)
+
+        if not showcase_only and recitation_id is None and recitation_relative_path is None and not chapter_audio_files:
+            raise RuntimeError(
+                f"auto reciters[{index}] must include recitation_id, recitation_relative_path, or chapter_audio_files."
+            )
+        if showcase_only and not has_whole_surah_source:
+            raise RuntimeError(
+                f"auto reciters[{index}] with showcase_only=true must include chapter_audio_files or auto-detected whole-surah files."
+            )
+
+        reciters.append(
+            AutoReciter(
+                reciter_name=reciter_name,
+                recitation_id=recitation_id,
+                recitation_relative_path=recitation_relative_path,
+                audio_base_url=audio_base_url,
+                audio_base_dir=audio_base_dir,
+                download_script=download_script,
+                chapter_audio_files=chapter_audio_files,
+                auto_detect_whole_surah_files=auto_detect_whole_surah_files,
+                whole_surah_includes_basmala=whole_surah_includes_basmala,
+                attribution_lines=attribution_lines,
+                reciter_name_arabic=reciter_name_arabic,
+                showcase_only=showcase_only,
+            )
+        )
+
+    return reciters
+
+
+def fetch_pexels_nature_video(cache_dir: Path, pexels_api_key: str) -> Path | None:
+    """Fetch a random nature video from Pexels API and cache it locally."""
+    query = random.choice(PEXELS_NATURE_QUERIES)
+    url = f"{PEXELS_API_BASE_URL}/search?query={query.replace(' ', '+')}&per_page=15&orientation=portrait"
+    try:
+        request = Request(url, headers={"Authorization": pexels_api_key, "User-Agent": "shortQuran/1.0"})
+        with urlopen(request, timeout=30) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except Exception as error:  # noqa: BLE001
+        print(f"[Pexels] Failed to search videos: {error}")
+        return None
+
+    videos = payload.get("videos")
+    if not isinstance(videos, list) or not videos:
+        print(f"[Pexels] No videos found for query: {query}")
+        return None
+
+    # Filter to portrait/tall videos only, pick random
+    tall_videos = [v for v in videos if isinstance(v, dict) and int(v.get("height", 0)) >= int(v.get("width", 1))]
+    chosen = random.choice(tall_videos or videos)
+    video_files = chosen.get("video_files") if isinstance(chosen, dict) else None
+    if not isinstance(video_files, list) or not video_files:
+        return None
+
+    # Prefer HD (1080p) portrait files
+    sorted_files = sorted(
+        [f for f in video_files if isinstance(f, dict) and f.get("link")],
+        key=lambda f: abs(int(f.get("height", 0)) - 1920),
+    )
+    chosen_file = sorted_files[0] if sorted_files else None
+    if chosen_file is None:
+        return None
+
+    video_url = str(chosen_file["link"])
+    video_id = str(chosen.get("id", "unknown"))
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cached_path = cache_dir / f"pexels_{video_id}.mp4"
+    if cached_path.exists():
+        print(f"[Pexels] Using cached video: {cached_path.name}")
+        return cached_path
+
+    print(f"[Pexels] Downloading nature video: {video_id} ({query})")
+    try:
+        request = Request(video_url, headers={"User-Agent": "shortQuran/1.0"})
+        with urlopen(request, timeout=60) as response:
+            cached_path.write_bytes(response.read())
+        print(f"[Pexels] Saved to {cached_path.name}")
+        return cached_path
+    except Exception as error:  # noqa: BLE001
+        print(f"[Pexels] Failed to download video: {error}")
+        if cached_path.exists():
+            cached_path.unlink()
+        return None
+
+
+def load_pexels_api_key(base_dir: Path) -> str | None:
+    """Load Pexels API key from .secrets/pexels-api-key.txt"""
+    key_path = (base_dir / DEFAULT_PEXELS_API_KEY_FILE).resolve()
+    if not key_path.exists():
+        return None
+    key = key_path.read_text(encoding="utf-8").strip()
+    return key or None
+
+
+def finalize_showcase_render_config(
+    *,
+    base_dir: Path,
+    index: int,
+    history_entries: list[dict[str, object]],
+    chapter_number: int,
+    chapter_name: str,
+    arabic_surah_name: str,
+    reciter: AutoReciter,
+    audio_path: Path,
+    target_seconds: float,
+    ffmpeg_command: str,
+    ffprobe_command: str,
+) -> RenderConfig:
+    """Build a showcase-style RenderConfig capped to the requested short duration."""
+    cache_dir = (base_dir / DEFAULT_CACHE_DIR).resolve()
+    output_dir = (base_dir / "outputs").resolve()
+
+    source_duration = probe_duration(audio_path, ffprobe_command)
+    clipped_duration = min(source_duration, max(1.0, target_seconds))
+    output_audio_path = audio_path
+    clip_start_seconds = 0.0
+    clip_end_seconds = clipped_duration
+    if source_duration > clipped_duration + 0.05:
+        clip_start_seconds, clip_end_seconds = choose_showcase_clip_window(
+            history_entries=history_entries,
+            chapter_number=chapter_number,
+            reciter_name=reciter.reciter_name,
+            source_duration=source_duration,
+            clip_duration=clipped_duration,
+        )
+        output_audio_path = cache_dir / "compiled_audio" / build_auto_output_path(
+            cache_dir / "compiled_audio",
+            chapter_number=chapter_number,
+            verse_start=1,
+            verse_end=0,
+            chapter_name=chapter_name,
+            reciter_name=reciter.reciter_name,
+            index=index,
+        ).with_suffix(".m4a").name
+        trim_audio_segment(
+            audio_path,
+            output_audio_path,
+            start_time=clip_start_seconds,
+            end_time=clip_end_seconds,
+            ffmpeg_command=ffmpeg_command,
+        )
+    combo_key = f"{chapter_number}:showcase:{sanitize_filename_part(reciter.reciter_name)}"
+    output_path = build_auto_output_path(
+        output_dir,
+        chapter_number=chapter_number,
+        verse_start=1,
+        verse_end=0,
+        chapter_name=chapter_name,
+        reciter_name=reciter.reciter_name,
+        index=index,
+    )
+
+    # Prefer user-provided local backgrounds first, then fall back to Pexels/default.
+    background_path: Path | None = None
+    recent_background_paths = set(
+        get_recent_history_values(history_entries, "background_path", limit=AUTO_RECENT_BACKGROUND_WINDOW)
+    )
+    background_path = choose_random_library_background(base_dir, excluded_paths=recent_background_paths)
+    if background_path is None:
+        pexels_key = load_pexels_api_key(base_dir)
+        if pexels_key:
+            pexels_cache = cache_dir / "pexels"
+            background_path = fetch_pexels_nature_video(pexels_cache, pexels_key)
+    if background_path is None:
+        background_path = download_asset(DEFAULT_BACKGROUND_URL, cache_dir / "background", "background")
+
+    font_file = download_asset(DEFAULT_ARABIC_FONT_URL, cache_dir / "font", "font")
+
+    title_text = f"{arabic_surah_name} | {chapter_name} | {reciter.reciter_name}"
+    history_entry = {
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "combo_key": combo_key,
+        "chapter_number": chapter_number,
+        "chapter_name": chapter_name,
+        "verse_reference": f"{chapter_number}:full",
+        "reciter_name": reciter.reciter_name,
+        "attribution_lines": list(reciter.attribution_lines),
+        "background_path": str(background_path.resolve()) if background_path is not None else "",
+        "style_preset": SHOWCASE_STYLE,
+        "title_text": title_text,
+        "planned_duration_seconds": round(clipped_duration, 2),
+        "source_duration_seconds": round(source_duration, 2),
+        "clip_start_seconds": round(clip_start_seconds, 2),
+        "clip_end_seconds": round(clip_end_seconds, 2),
+        "output_path": str(output_path),
+    }
+
+    return RenderConfig(
+        audio_path=output_audio_path,
+        output_path=output_path,
+        verse_text="",
+        surah_name=chapter_name,
+        verse_reference=f"{chapter_number}:full",
+        translation=None,
+        reciter_name=reciter.reciter_name,
+        background_path=background_path,
+        font_file=font_file,
+        brand_text="shortQuran",
+        title_text=title_text,
+        fps=DEFAULT_FPS,
+        timed_segments=None,
+        prefer_static_text_overlay=False,
+        show_meta=False,
+        show_brand=False,
+        style_preset=SHOWCASE_STYLE,
+        auto_history_entry=history_entry,
+        attribution_lines=reciter.attribution_lines,
+        arabic_surah_name=arabic_surah_name,
+        arabic_reciter_name=reciter.reciter_name_arabic,
+    )
 
 
 def fetch_chapter_verses_page(
@@ -2344,6 +2977,51 @@ def fetch_chapter_audio_page(chapter_number: int, *, page: int, recitation_id: i
     return audio_map
 
 
+def resolve_auto_reciter_audio_source(
+    reciter: AutoReciter,
+    *,
+    chapter_number: int,
+    chapter_name: str,
+    ayah_number: int,
+) -> tuple[str | None, Path | None]:
+    if reciter.recitation_id is not None:
+        return None, None
+
+    if reciter.recitation_relative_path is None:
+        raise RuntimeError(f"Automatic reciter '{reciter.reciter_name}' is missing recitation_relative_path.")
+
+    verse_code = f"{chapter_number:03d}{ayah_number:03d}"
+    if reciter.audio_base_dir is not None:
+        base_dir = reciter.audio_base_dir
+        if reciter.recitation_relative_path:
+            base_dir = base_dir / reciter.recitation_relative_path
+        for extension in LOCAL_AUDIO_EXTENSIONS:
+            candidate = base_dir / f"{verse_code}{extension}"
+            if candidate.exists():
+                return None, candidate
+        named_candidate = find_named_local_audio_file(
+            base_dir,
+            chapter_number=chapter_number,
+            chapter_name=chapter_name,
+            ayah_number=ayah_number,
+        )
+        if named_candidate is not None:
+            return None, named_candidate
+        raise FileNotFoundError(
+            f"Could not find local audio for {verse_code} under {base_dir} for reciter '{reciter.reciter_name}'."
+        )
+
+    return (
+        build_verse_audio_url(
+            reciter.recitation_relative_path,
+            chapter_number,
+            ayah_number,
+            base_url=reciter.audio_base_url,
+        ),
+        None,
+    )
+
+
 def concatenate_audio_files(audio_paths: list[Path], output_path: Path, ffmpeg_command: str) -> Path:
     if not audio_paths:
         raise ValueError("No audio files were provided for concatenation.")
@@ -2389,6 +3067,61 @@ def probe_duration(media_path: Path, ffprobe_command: str) -> float:
     return float(result.stdout.strip())
 
 
+def estimate_whole_surah_verse_durations(
+    verse_payloads: list[dict[str, object]],
+    *,
+    total_duration: float,
+) -> list[float]:
+    if not verse_payloads:
+        raise ValueError("Whole-surah duration estimation requires at least one verse.")
+    if total_duration <= 0:
+        raise ValueError("Whole-surah duration estimation requires a positive duration.")
+
+    weights: list[float] = []
+    for verse_payload in verse_payloads:
+        arabic = normalize_optional_text(verse_payload.get("text_uthmani")) or ""
+        word_count = len([word for word in arabic.split() if word.strip()])
+        weights.append(float(max(word_count, 1)))
+
+    total_weight = sum(weights) or float(len(weights))
+    consumed = 0.0
+    durations: list[float] = []
+    for index, weight in enumerate(weights):
+        if index == len(weights) - 1:
+            duration = max(0.25, total_duration - consumed)
+        else:
+            duration = total_duration * (weight / total_weight)
+            consumed += duration
+        durations.append(duration)
+
+    return durations
+
+
+def estimate_intro_duration(
+    *,
+    total_duration: float,
+    verse_payloads: list[dict[str, object]],
+    intro_word_count: int,
+) -> float:
+    if total_duration <= 0:
+        raise ValueError("Intro duration estimation requires a positive duration.")
+    if intro_word_count <= 0:
+        return 0.0
+
+    verse_word_total = 0
+    for verse_payload in verse_payloads:
+        arabic = normalize_optional_text(verse_payload.get("text_uthmani")) or ""
+        verse_word_total += max(len([word for word in arabic.split() if word.strip()]), 1)
+
+    total_weight = intro_word_count + max(verse_word_total, 1)
+    estimated = total_duration * (intro_word_count / total_weight)
+    return max(0.6, min(estimated, max(1.2, total_duration * 0.18)))
+
+
+def whole_surah_duration_supported(audio_path: Path, ffprobe_command: str) -> bool:
+    return probe_duration(audio_path, ffprobe_command) > 0
+
+
 def build_auto_output_path(
     output_dir: Path,
     *,
@@ -2424,6 +3157,7 @@ def extract_translation_text(verse_payload: dict[str, object]) -> str:
 def collect_auto_verses(
     *,
     chapter_number: int,
+    chapter_name: str,
     verses_count: int,
     reciter: AutoReciter,
     translation_id: int,
@@ -2449,15 +3183,30 @@ def collect_auto_verses(
         page = ((current_ayah - 1) // 50) + 1
         if page not in verses_cache:
             verses_cache[page] = fetch_chapter_verses_page(chapter_number, page=page, translation_id=translation_id)
-            audio_cache[page] = fetch_chapter_audio_page(chapter_number, page=page, recitation_id=reciter.recitation_id)
+            if reciter.recitation_id is not None:
+                audio_cache[page] = fetch_chapter_audio_page(
+                    chapter_number,
+                    page=page,
+                    recitation_id=reciter.recitation_id,
+                )
+            else:
+                audio_cache[page] = {}
 
         verse_key = f"{chapter_number}:{current_ayah}"
         verse_payload = next((item for item in verses_cache[page] if item.get("verse_key") == verse_key), None)
         if verse_payload is None:
             raise RuntimeError(f"Could not find verse data for {verse_key}.")
 
+        local_audio_path: Path | None = None
         audio_url = audio_cache[page].get(verse_key)
-        if not audio_url:
+        if not audio_url and reciter.recitation_id is None:
+            audio_url, local_audio_path = resolve_auto_reciter_audio_source(
+                reciter,
+                chapter_number=chapter_number,
+                chapter_name=chapter_name,
+                ayah_number=current_ayah,
+            )
+        if not audio_url and local_audio_path is None:
             raise RuntimeError(f"Could not find audio URL for {verse_key} with reciter {reciter.reciter_name}.")
 
         arabic = require_non_empty_text(verse_payload.get("text_uthmani", ""), f"text_uthmani for {verse_key}")
@@ -2468,7 +3217,7 @@ def collect_auto_verses(
             raise RuntimeError(f"Verse {verse_key} is too long for cinematic automatic mode.")
 
         translation = extract_translation_text(verse_payload) or translation_map.get(verse_key, "")
-        audio_path = download_asset(audio_url, cache_dir / "audio", "audio")
+        audio_path = local_audio_path or download_asset(audio_url, cache_dir / "audio", "audio")
         duration = probe_duration(audio_path, ffprobe_command)
 
         if selected_verses and total_duration >= minimum_duration and (total_duration + duration) > (target_seconds + AUTO_DURATION_OVERSHOOT_TOLERANCE):
@@ -2508,6 +3257,322 @@ def collect_auto_verses(
     return selected_verses
 
 
+def collect_auto_whole_surah_verses(
+    *,
+    chapter_number: int,
+    verses_count: int,
+    whole_surah_audio_path: Path,
+    whole_surah_includes_basmala: bool,
+    translation_id: int,
+    target_seconds: float,
+    ffprobe_command: str,
+) -> tuple[list[AutoVerse], Path, float, float]:
+    if not whole_surah_audio_path.exists():
+        raise FileNotFoundError(
+            f"Whole-surah audio for chapter {chapter_number} was not found: {whole_surah_audio_path}"
+        )
+
+    verse_payloads = [
+        verse
+        for verse in fetch_all_chapter_verses(
+            chapter_number,
+            verses_count=verses_count,
+            translation_id=translation_id,
+        )
+        if isinstance(verse, dict)
+    ]
+    verse_payloads.sort(key=lambda verse: get_verse_number_from_key(str(verse.get("verse_key") or f"{chapter_number}:0")))
+    if not verse_payloads:
+        raise RuntimeError(f"Could not load verse payloads for chapter {chapter_number}.")
+
+    translation_map = fetch_public_translation_map(chapter_number)
+    total_duration = probe_duration(whole_surah_audio_path, ffprobe_command)
+    include_basmala = whole_surah_includes_basmala and chapter_starts_with_basmala(chapter_number)
+    basmala_duration = 0.0
+    if include_basmala:
+        basmala_duration = estimate_intro_duration(
+            total_duration=total_duration,
+            verse_payloads=verse_payloads,
+            intro_word_count=len(BISMILLAH_ARABIC.split()),
+        )
+
+    remaining_duration = max(0.25, total_duration - basmala_duration)
+    verse_durations = estimate_whole_surah_verse_durations(verse_payloads, total_duration=remaining_duration)
+    quran_verses: list[AutoVerse] = []
+    for verse_payload, verse_duration in zip(verse_payloads, verse_durations):
+        verse_key = require_non_empty_text(verse_payload.get("verse_key", ""), f"verse_key for chapter {chapter_number}")
+        arabic = require_non_empty_text(verse_payload.get("text_uthmani", ""), f"text_uthmani for {verse_key}")
+        translation = extract_translation_text(verse_payload) or translation_map.get(verse_key, "")
+        quran_verses.append(
+            AutoVerse(
+                verse_key=verse_key,
+                arabic=arabic,
+                translation=translation,
+                audio_url="",
+                audio_path=whole_surah_audio_path,
+                duration=verse_duration,
+            )
+        )
+
+    basmala_verse: AutoVerse | None = None
+    if include_basmala and basmala_duration > 0:
+        basmala_verse = AutoVerse(
+            verse_key=f"{chapter_number}:0",
+            arabic=BISMILLAH_ARABIC,
+            translation=BISMILLAH_TRANSLATION,
+            audio_url="",
+            audio_path=whole_surah_audio_path,
+            duration=basmala_duration,
+        )
+
+    minimum_duration = min(AUTO_MIN_DURATION, max(10.0, target_seconds * 0.68))
+    start_offsets: list[float] = []
+    cursor = basmala_duration
+    for verse in quran_verses:
+        start_offsets.append(cursor)
+        cursor += verse.duration
+
+    candidate_starts = list(range(len(quran_verses)))
+    if len(candidate_starts) > 1:
+        non_zero_starts = candidate_starts[1:]
+        random.shuffle(non_zero_starts)
+        candidate_starts = non_zero_starts + [0]
+
+    clipped_verses: list[AutoVerse] = []
+    clipped_duration = 0.0
+    clip_start_time = 0.0
+    clip_end_time = 0.0
+    for start_index in candidate_starts:
+        current_verses: list[AutoVerse] = []
+        current_duration = 0.0
+        if start_index == 0 and basmala_verse is not None:
+            current_verses.append(basmala_verse)
+            current_duration += basmala_duration
+
+        for verse in quran_verses[start_index:]:
+            if (
+                current_verses
+                and current_duration >= minimum_duration
+                and (current_duration + verse.duration) > (target_seconds + AUTO_DURATION_OVERSHOOT_TOLERANCE)
+            ):
+                break
+            current_verses.append(verse)
+            current_duration += verse.duration
+            if current_duration >= target_seconds:
+                break
+
+        if len(current_verses) > 1:
+            trimmed_duration = current_duration - current_verses[-1].duration
+            if (
+                trimmed_duration >= minimum_duration
+                and abs(trimmed_duration - target_seconds) < abs(current_duration - target_seconds)
+                and any(get_verse_number_from_key(verse.verse_key) > 0 for verse in current_verses[:-1])
+            ):
+                current_verses.pop()
+                current_duration = trimmed_duration
+
+        if not current_verses or not any(get_verse_number_from_key(verse.verse_key) > 0 for verse in current_verses):
+            continue
+        if current_duration < minimum_duration:
+            continue
+
+        quran_verse_count = len([verse for verse in current_verses if get_verse_number_from_key(verse.verse_key) > 0])
+        while quran_verse_count > AUTO_STATIC_WHOLE_SURAH_MAX_QURAN_VERSES and len(current_verses) > 1:
+            removed_verse = current_verses.pop()
+            current_duration = max(0.0, current_duration - removed_verse.duration)
+            quran_verse_count = len([verse for verse in current_verses if get_verse_number_from_key(verse.verse_key) > 0])
+            if current_duration < minimum_duration:
+                break
+
+        if current_duration < minimum_duration:
+            continue
+
+        display_verses = list(current_verses)
+        if 0 < start_index <= 2:
+            opening_context: list[AutoVerse] = []
+            if basmala_verse is not None:
+                opening_context.append(basmala_verse)
+            opening_context.extend(quran_verses[:start_index])
+            existing_verse_keys = {verse.verse_key for verse in display_verses}
+            display_verses = [verse for verse in opening_context if verse.verse_key not in existing_verse_keys] + display_verses
+
+        clip_start_time = 0.0 if start_index == 0 and include_basmala else start_offsets[start_index]
+        clip_end_time = clip_start_time + current_duration
+        if 0 < start_index <= 2:
+            # Whole-surah audio intros often flow into the first verses, so keep
+            # the clip anchored at the real start of the surah for early excerpts.
+            opening_lead_in = start_offsets[start_index]
+            clip_start_time = 0.0
+            clip_end_time = min(total_duration, opening_lead_in + current_duration)
+        clipped_verses = display_verses
+        clipped_duration = current_duration
+        break
+
+    if not clipped_verses:
+        raise RuntimeError("Whole-surah automatic selection returned no usable verses.")
+
+    return clipped_verses, whole_surah_audio_path, clip_start_time, clip_end_time
+
+
+def finalize_auto_render_config(
+    *,
+    base_dir: Path,
+    index: int,
+    history_entries: list[dict[str, object]],
+    chapter_number: int,
+    chapter_name: str,
+    reciter: AutoReciter,
+    selected_verses: list[AutoVerse],
+    selected_target_seconds: float,
+    ffmpeg_command: str,
+    source_audio_path: Path | None = None,
+    source_start_time: float | None = None,
+    source_end_time: float | None = None,
+    allow_repeat_combo: bool = False,
+) -> RenderConfig:
+    cache_dir = (base_dir / DEFAULT_CACHE_DIR).resolve()
+    output_dir = (base_dir / "outputs").resolve()
+
+    reference_verses = [verse for verse in selected_verses if get_verse_number_from_key(verse.verse_key) > 0]
+    if not reference_verses:
+        raise RuntimeError("Automatic render configuration requires at least one Quran verse segment.")
+
+    verse_start = get_verse_number_from_key(reference_verses[0].verse_key)
+    verse_end = get_verse_number_from_key(reference_verses[-1].verse_key)
+    verse_reference = f"{chapter_number}:{verse_start}" if verse_start == verse_end else f"{chapter_number}:{verse_start}-{verse_end}"
+    combo_key = build_auto_combo_key(chapter_number, verse_start, verse_end, reciter.reciter_name)
+    known_combo_keys = {
+        normalize_optional_text(entry.get("combo_key")) or ""
+        for entry in history_entries
+    }
+    if combo_key in known_combo_keys and not allow_repeat_combo:
+        raise RuntimeError(f"Automatic mode selected a repeated combination: {combo_key}")
+
+    if source_audio_path is None:
+        audio_output = cache_dir / "compiled_audio" / build_auto_output_path(
+            cache_dir / "compiled_audio",
+            chapter_number=chapter_number,
+            verse_start=verse_start,
+            verse_end=verse_end,
+            chapter_name=chapter_name,
+            reciter_name=reciter.reciter_name,
+            index=index,
+        ).with_suffix(".m4a").name
+        concatenate_audio_files([verse.audio_path for verse in selected_verses], audio_output, ffmpeg_command)
+    else:
+        if source_end_time is not None:
+            audio_output = cache_dir / "compiled_audio" / build_auto_output_path(
+                cache_dir / "compiled_audio",
+                chapter_number=chapter_number,
+                verse_start=verse_start,
+                verse_end=verse_end,
+                chapter_name=chapter_name,
+                reciter_name=reciter.reciter_name,
+                index=index,
+            ).with_suffix(".m4a").name
+            trim_audio_segment(
+                source_audio_path,
+                audio_output,
+                start_time=max(0.0, source_start_time or 0.0),
+                end_time=source_end_time,
+                ffmpeg_command=ffmpeg_command,
+            )
+        else:
+            audio_output = source_audio_path
+
+    use_static_source_audio = source_audio_path is not None
+    timed_segments: list[TimedSegment] = []
+    cursor = 0.0
+    for verse in selected_verses:
+        if not use_static_source_audio:
+            timed_segments.append(
+                TimedSegment(
+                    arabic=verse.arabic,
+                    translation=verse.translation,
+                    start_time=cursor,
+                    end_time=cursor + verse.duration,
+                )
+            )
+        cursor += verse.duration
+
+    recent_background_paths = set(
+        get_recent_history_values(
+            history_entries,
+            "background_path",
+            limit=AUTO_RECENT_BACKGROUND_WINDOW,
+        )
+    )
+    background_path = choose_random_library_background(base_dir, excluded_paths=recent_background_paths)
+    if background_path is not None:
+        print(f"Using local background from {background_path}")
+    else:
+        background_path = download_asset(DEFAULT_BACKGROUND_URL, cache_dir / "background", "background")
+    font_file = download_asset(DEFAULT_ARABIC_FONT_URL, cache_dir / "font", "font")
+    style_preset = choose_auto_style_preset(history_entries)
+    title_template_key, title_text = build_auto_title(
+        chapter_name=chapter_name,
+        verse_reference=verse_reference,
+        verse_start=verse_start,
+        verse_end=verse_end,
+        reciter_name=reciter.reciter_name,
+        history_entries=history_entries,
+    )
+    output_path = build_auto_output_path(
+        output_dir,
+        chapter_number=chapter_number,
+        verse_start=verse_start,
+        verse_end=verse_end,
+        chapter_name=chapter_name,
+        reciter_name=reciter.reciter_name,
+        index=index,
+    )
+    history_entry = {
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "combo_key": combo_key,
+        "chapter_number": chapter_number,
+        "chapter_name": chapter_name,
+        "verse_reference": verse_reference,
+        "verse_start": verse_start,
+        "verse_end": verse_end,
+        "reciter_name": reciter.reciter_name,
+        "attribution_lines": list(reciter.attribution_lines),
+        "background_path": str(background_path.resolve()) if background_path is not None else "",
+        "style_preset": style_preset,
+        "title_template_key": title_template_key,
+        "title_text": title_text,
+        "target_seconds": selected_target_seconds,
+        "planned_duration_seconds": round(
+            max(0.0, (source_end_time or 0.0) - max(0.0, source_start_time or 0.0))
+            if use_static_source_audio and source_end_time is not None
+            else cursor,
+            2,
+        ),
+        "output_path": str(output_path),
+    }
+
+    return RenderConfig(
+        audio_path=audio_output,
+        output_path=output_path,
+        verse_text=" ".join(verse.arabic for verse in selected_verses),
+        surah_name=chapter_name,
+        verse_reference=verse_reference,
+        translation=" ".join(filter(None, (verse.translation for verse in selected_verses))) or None,
+        reciter_name=reciter.reciter_name,
+        background_path=background_path,
+        font_file=font_file,
+        brand_text="shortQuran",
+        title_text=title_text,
+        fps=DEFAULT_FPS,
+        timed_segments=timed_segments or None,
+        prefer_static_text_overlay=use_static_source_audio,
+        show_meta=True,
+        show_brand=False,
+        style_preset=style_preset,
+        auto_history_entry=history_entry,
+        attribution_lines=reciter.attribution_lines,
+    )
+
+
 def build_auto_render_config(
     *,
     base_dir: Path,
@@ -2520,29 +3585,9 @@ def build_auto_render_config(
     ffmpeg_command: str,
     ffprobe_command: str,
 ) -> RenderConfig:
-    cache_dir = (base_dir / DEFAULT_CACHE_DIR).resolve()
-    output_dir = (base_dir / "outputs").resolve()
     last_error: Exception | None = None
 
     for _ in range(20):
-        recent_chapter_values = get_recent_history_values(
-            history_entries,
-            "chapter_number",
-            limit=AUTO_RECENT_CHAPTER_WINDOW,
-        )
-        recent_chapter_ids = {int(value) for value in recent_chapter_values if value.isdigit()}
-        available_chapters = [
-            chapter
-            for chapter in chapters
-            if int(chapter.get("id") or 0) not in recent_chapter_ids
-        ]
-        chapter = random.choice(available_chapters or chapters)
-        chapter_number = int(chapter.get("id") or 0)
-        verses_count = int(chapter.get("verses_count") or 0)
-        chapter_name = normalize_optional_text(chapter.get("name_simple")) or f"Surah {chapter_number}"
-        if chapter_number <= 0 or verses_count <= 0:
-            continue
-
         recent_reciters = set(
             get_recent_history_values(
                 history_entries,
@@ -2556,134 +3601,189 @@ def build_auto_render_config(
             if reciter_candidate.reciter_name not in recent_reciters
         ]
         reciter = random.choice(available_reciters or reciters)
-        selected_target_seconds = choose_auto_target_seconds(target_seconds, history_entries)
+
+        recent_chapter_values = get_recent_history_values(
+            history_entries,
+            "chapter_number",
+            limit=AUTO_RECENT_CHAPTER_WINDOW,
+        )
+        recent_chapter_ids = {int(value) for value in recent_chapter_values if value.isdigit()}
+        candidate_chapters = chapters
+        whole_surah_files = get_auto_reciter_whole_surah_files(reciter)
+        downloadable_chapters = list_auto_reciter_downloadable_chapters(reciter)
+        if reciter.showcase_only and whole_surah_files:
+            # Showcase mode: bypass the 60s duration limit - use full surah audio
+            supported_chapter_ids = {
+                chapter_id
+                for chapter_id, audio_path in whole_surah_files.items()
+                if audio_path.exists()
+            }
+            supported_chapter_ids.update(downloadable_chapters)
+            candidate_chapters = [
+                chapter
+                for chapter in chapters
+                if int(chapter.get("id") or 0) in supported_chapter_ids
+            ]
+            if not candidate_chapters:
+                last_error = RuntimeError(
+                    f"Showcase reciter '{reciter.reciter_name}' does not have any usable whole-surah files."
+                )
+                continue
+        elif reciter.showcase_only and downloadable_chapters:
+            supported_chapter_ids = set(downloadable_chapters)
+            candidate_chapters = [
+                chapter
+                for chapter in chapters
+                if int(chapter.get("id") or 0) in supported_chapter_ids
+            ]
+            if not candidate_chapters:
+                last_error = RuntimeError(
+                    f"Showcase reciter '{reciter.reciter_name}' does not have any downloadable whole-surah files."
+                )
+                continue
+        elif whole_surah_files:
+            supported_chapter_ids = {
+                chapter_id
+                for chapter_id, audio_path in whole_surah_files.items()
+                if audio_path.exists() and whole_surah_duration_supported(audio_path, ffprobe_command)
+            }
+            candidate_chapters = [
+                chapter
+                for chapter in chapters
+                if int(chapter.get("id") or 0) in supported_chapter_ids
+            ]
+            if not candidate_chapters:
+                last_error = RuntimeError(
+                    f"Automatic reciter '{reciter.reciter_name}' does not have any usable whole-surah files."
+                )
+                continue
+        elif reciter.audio_base_dir is not None and reciter.recitation_id is None:
+            candidate_chapters = [
+                chapter
+                for chapter in chapters
+                if local_audio_chapter_available(
+                    reciter,
+                    chapter_number=int(chapter.get("id") or 0),
+                    chapter_name=normalize_optional_text(chapter.get("name_simple")) or f"Surah {int(chapter.get('id') or 0)}",
+                )
+            ]
+            if not candidate_chapters:
+                last_error = RuntimeError(
+                    f"Automatic reciter '{reciter.reciter_name}' does not have any usable verse-by-verse local files."
+                )
+                continue
+        available_chapters = [
+            chapter
+            for chapter in candidate_chapters
+            if int(chapter.get("id") or 0) not in recent_chapter_ids
+        ]
+        chapter = random.choice(available_chapters or candidate_chapters)
+        chapter_number = int(chapter.get("id") or 0)
+        verses_count = int(chapter.get("verses_count") or 0)
+        chapter_name = normalize_optional_text(chapter.get("name_simple")) or f"Surah {chapter_number}"
+        if chapter_number <= 0 or verses_count <= 0:
+                continue
+
+        selected_target_seconds = (
+            target_seconds
+            if reciter.showcase_only
+            else choose_auto_target_seconds(target_seconds, history_entries)
+        )
         try:
+            if reciter.showcase_only:
+                showcase_audio_path = whole_surah_files.get(chapter_number)
+                if showcase_audio_path is None:
+                    showcase_audio_path = ensure_auto_reciter_chapter_audio(reciter, chapter_number=chapter_number)
+                if showcase_audio_path is None:
+                    raise RuntimeError(
+                        f"Showcase reciter '{reciter.reciter_name}' does not define audio for chapter {chapter_number}."
+                    )
+                arabic_surah_name = normalize_optional_text(chapter.get("name_arabic")) or chapter_name
+                return finalize_showcase_render_config(
+                    base_dir=base_dir,
+                    index=index,
+                    history_entries=history_entries,
+                    chapter_number=chapter_number,
+                    chapter_name=chapter_name,
+                    arabic_surah_name=arabic_surah_name,
+                    reciter=reciter,
+                    audio_path=showcase_audio_path,
+                    target_seconds=selected_target_seconds,
+                    ffmpeg_command=ffmpeg_command,
+                    ffprobe_command=ffprobe_command,
+                )
+            ensure_auto_reciter_source_material(reciter)
+            whole_surah_files = get_auto_reciter_whole_surah_files(reciter)
+            if whole_surah_files:
+                whole_surah_audio_path = whole_surah_files.get(chapter_number)
+                if whole_surah_audio_path is None:
+                    raise RuntimeError(
+                        f"Automatic reciter '{reciter.reciter_name}' does not define whole-surah audio for chapter {chapter_number}."
+                    )
+                selected_verses, whole_surah_audio_path, whole_surah_clip_start, whole_surah_clip_end = collect_auto_whole_surah_verses(
+                    chapter_number=chapter_number,
+                    verses_count=verses_count,
+                    whole_surah_audio_path=whole_surah_audio_path,
+                    whole_surah_includes_basmala=reciter.whole_surah_includes_basmala,
+                    translation_id=translation_id,
+                    target_seconds=selected_target_seconds,
+                    ffprobe_command=ffprobe_command,
+                )
+                return finalize_auto_render_config(
+                    base_dir=base_dir,
+                    index=index,
+                    history_entries=history_entries,
+                    chapter_number=chapter_number,
+                    chapter_name=chapter_name,
+                    reciter=reciter,
+                    selected_verses=selected_verses,
+                    selected_target_seconds=selected_target_seconds,
+                    ffmpeg_command=ffmpeg_command,
+                    source_audio_path=whole_surah_audio_path,
+                    source_start_time=whole_surah_clip_start,
+                    source_end_time=whole_surah_clip_end,
+                    allow_repeat_combo=True,
+                )
+
             translation_map = fetch_public_translation_map(chapter_number)
             selected_verses = collect_auto_verses(
                 chapter_number=chapter_number,
+                chapter_name=chapter_name,
                 verses_count=verses_count,
                 reciter=reciter,
                 translation_id=translation_id,
                 translation_map=translation_map,
                 target_seconds=selected_target_seconds,
-                cache_dir=cache_dir,
+                cache_dir=(base_dir / DEFAULT_CACHE_DIR).resolve(),
                 ffprobe_command=ffprobe_command,
+            )
+            return finalize_auto_render_config(
+                base_dir=base_dir,
+                index=index,
+                history_entries=history_entries,
+                chapter_number=chapter_number,
+                chapter_name=chapter_name,
+                reciter=reciter,
+                selected_verses=selected_verses,
+                selected_target_seconds=selected_target_seconds,
+                ffmpeg_command=ffmpeg_command,
             )
         except Exception as error:  # noqa: BLE001
             last_error = error
             continue
-
-        verse_start = get_verse_number_from_key(selected_verses[0].verse_key)
-        verse_end = get_verse_number_from_key(selected_verses[-1].verse_key)
-        verse_reference = f"{chapter_number}:{verse_start}" if verse_start == verse_end else f"{chapter_number}:{verse_start}-{verse_end}"
-        combo_key = build_auto_combo_key(chapter_number, verse_start, verse_end, reciter.reciter_name)
-        known_combo_keys = {
-            normalize_optional_text(entry.get("combo_key")) or ""
-            for entry in history_entries
-        }
-        if combo_key in known_combo_keys:
-            last_error = RuntimeError(f"Automatic mode selected a repeated combination: {combo_key}")
-            continue
-
-        audio_output = cache_dir / "compiled_audio" / build_auto_output_path(
-            cache_dir / "compiled_audio",
-            chapter_number=chapter_number,
-            verse_start=verse_start,
-            verse_end=verse_end,
-            chapter_name=chapter_name,
-            reciter_name=reciter.reciter_name,
-            index=index,
-        ).with_suffix(".m4a").name
-        concatenate_audio_files([verse.audio_path for verse in selected_verses], audio_output, ffmpeg_command)
-
-        timed_segments: list[TimedSegment] = []
-        cursor = 0.0
-        for verse in selected_verses:
-            timed_segments.append(
-                TimedSegment(
-                    arabic=verse.arabic,
-                    translation=verse.translation,
-                    start_time=cursor,
-                    end_time=cursor + verse.duration,
-                )
-            )
-            cursor += verse.duration
-
-        recent_background_paths = set(
-            get_recent_history_values(
-                history_entries,
-                "background_path",
-                limit=AUTO_RECENT_BACKGROUND_WINDOW,
-            )
-        )
-        background_path = choose_random_library_background(base_dir, excluded_paths=recent_background_paths)
-        if background_path is not None:
-            print(f"Using local background from {background_path}")
-        else:
-            background_path = download_asset(DEFAULT_BACKGROUND_URL, cache_dir / "background", "background")
-        font_file = download_asset(DEFAULT_ARABIC_FONT_URL, cache_dir / "font", "font")
-        style_preset = choose_auto_style_preset(history_entries)
-        title_template_key, title_text = build_auto_title(
-            chapter_name=chapter_name,
-            verse_reference=verse_reference,
-            verse_start=verse_start,
-            verse_end=verse_end,
-            reciter_name=reciter.reciter_name,
-            history_entries=history_entries,
-        )
-        output_path = build_auto_output_path(
-            output_dir,
-            chapter_number=chapter_number,
-            verse_start=verse_start,
-            verse_end=verse_end,
-            chapter_name=chapter_name,
-            reciter_name=reciter.reciter_name,
-            index=index,
-        )
-        history_entry = {
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "combo_key": combo_key,
-            "chapter_number": chapter_number,
-            "chapter_name": chapter_name,
-            "verse_reference": verse_reference,
-            "verse_start": verse_start,
-            "verse_end": verse_end,
-            "reciter_name": reciter.reciter_name,
-            "background_path": str(background_path.resolve()) if background_path is not None else "",
-            "style_preset": style_preset,
-            "title_template_key": title_template_key,
-            "title_text": title_text,
-            "target_seconds": selected_target_seconds,
-            "planned_duration_seconds": round(cursor, 2),
-            "output_path": str(output_path),
-        }
-
-        return RenderConfig(
-            audio_path=audio_output,
-            output_path=output_path,
-            verse_text=" ".join(verse.arabic for verse in selected_verses),
-            surah_name=chapter_name,
-            verse_reference=verse_reference,
-            translation=" ".join(filter(None, (verse.translation for verse in selected_verses))) or None,
-            reciter_name=reciter.reciter_name,
-            background_path=background_path,
-            font_file=font_file,
-            brand_text="shortQuran",
-            title_text=title_text,
-            fps=DEFAULT_FPS,
-            timed_segments=timed_segments,
-            show_meta=True,
-            show_brand=False,
-            style_preset=style_preset,
-            auto_history_entry=history_entry,
-        )
 
     if last_error is not None:
         raise RuntimeError(f"Automatic render generation failed: {last_error}") from last_error
     raise RuntimeError("Automatic render generation failed before any chapter could be selected.")
 
 
-def build_auto_render_configs(base_dir: Path, *, count: int, target_seconds: float) -> list[RenderConfig]:
+def build_auto_render_configs(
+    base_dir: Path,
+    *,
+    count: int,
+    target_seconds: float,
+    auto_reciter_library_file: str | None = None,
+) -> list[RenderConfig]:
     if count <= 0:
         raise ValueError("'count' must be greater than zero.")
     if target_seconds <= 0:
@@ -2691,14 +3791,32 @@ def build_auto_render_configs(base_dir: Path, *, count: int, target_seconds: flo
 
     ffmpeg_command = resolve_binary_command("ffmpeg")
     ffprobe_command = resolve_binary_command("ffprobe")
-    chapters = [
-        chapter
-        for chapter in fetch_auto_chapters()
-        if int(chapter.get("id") or 0) >= DEFAULT_AUTO_CHAPTER_MIN
-    ]
+    all_chapters = fetch_auto_chapters()
+    if not all_chapters:
+        raise RuntimeError("No chapters are available for automatic cinematic mode.")
+    explicit_library_file_raw = normalize_optional_text(auto_reciter_library_file) or normalize_optional_text(
+        os.getenv("AUTO_RECITER_LIBRARY_FILE")
+    )
+    library_file_raw = explicit_library_file_raw or DEFAULT_AUTO_RECITER_LIBRARY_FILE
+    library_path = resolve_runtime_path(base_dir, library_file_raw)
+    if explicit_library_file_raw and not library_path.exists():
+        raise FileNotFoundError(f"Auto reciter library file not found: {library_path}")
+    reciters = load_auto_reciters_from_library(library_path) if library_path.exists() else fetch_auto_reciters()
+    if any(
+        reciter.chapter_audio_files
+        or reciter.auto_detect_whole_surah_files
+        or (reciter.audio_base_dir is not None and reciter.recitation_id is None)
+        for reciter in reciters
+    ):
+        chapters = all_chapters
+    else:
+        chapters = [
+            chapter
+            for chapter in all_chapters
+            if int(chapter.get("id") or 0) >= DEFAULT_AUTO_CHAPTER_MIN
+        ]
     if not chapters:
         raise RuntimeError("No chapters are available for automatic cinematic mode.")
-    reciters = fetch_auto_reciters()
     history_entries = load_auto_history(base_dir)
     configs: list[RenderConfig] = []
     planned_history_entries = list(history_entries)
@@ -2753,6 +3871,10 @@ def resolve_arabic_text_metrics(line_count: int, *, is_cinematic: bool) -> tuple
     if not is_cinematic:
         return 88, 24
 
+    if line_count >= 7:
+        return 68, 24
+    if line_count == 6:
+        return 74, 26
     if line_count >= 5:
         return 80, 30
     if line_count == 4:
@@ -2760,6 +3882,23 @@ def resolve_arabic_text_metrics(line_count: int, *, is_cinematic: bool) -> tuple
     if line_count == 3:
         return 96, 24
     return 108, 20
+
+
+def resolve_translation_text_metrics(line_count: int, *, is_cinematic: bool) -> tuple[int, int]:
+    if not is_cinematic:
+        if line_count >= 7:
+            return 30, 10
+        if line_count >= 5:
+            return 34, 10
+        return 40, 14
+
+    if line_count >= 7:
+        return 32, 8
+    if line_count >= 5:
+        return 38, 10
+    if line_count >= 4:
+        return 42, 10
+    return 48, 12
 
 
 def resolve_text_stack_positions(
@@ -2961,11 +4100,38 @@ def build_line_files(temp_dir: Path, prefix: str, text: str) -> list[Path]:
 
 def create_text_assets(config: RenderConfig, temp_dir: Path) -> dict[str, list[Path]]:
     is_cinematic = is_cinematic_style(config.style_preset)
+    is_showcase = config.style_preset == SHOWCASE_STYLE
+
+    if is_showcase:
+        # Showcase: show surah name (Arabic + English) + reciter name (Arabic + English), no verse
+        arabic_surah = config.arabic_surah_name or config.surah_name
+        english_surah = config.surah_name
+        arabic_reciter = config.arabic_reciter_name or ""
+        english_reciter = config.reciter_name or ""
+
+        # Verse slot = Arabic surah name (large, Arabic font)
+        verse_text = "\n".join(filter(None, [arabic_surah, arabic_reciter]))
+        # Translation slot = English surah + reciter info
+        reciter_line = " ".join(filter(None, [arabic_reciter, f"· {english_reciter}" if english_reciter else ""])).strip()
+        translation_text = "\n".join(filter(None, [english_surah, english_reciter]))
+
+        brand_text = wrap_text(config.brand_text, width=24) if config.show_brand else ""
+        assets = {
+            "meta": [],
+            "verse": build_line_files(temp_dir, "verse", verse_text),
+            "brand": build_line_files(temp_dir, "brand", brand_text),
+        }
+        if translation_text:
+            assets["translation"] = build_line_files(temp_dir, "translation", translation_text)
+        return assets
+
     title_value = config.title_text or f"{config.surah_name} | {config.verse_reference}"
     meta_text = ""
     if config.show_meta:
         if is_cinematic:
-            meta_value = f"{config.surah_name} | {config.verse_reference}"
+            meta_value = config.surah_name
+            if config.reciter_name:
+                meta_value = f"{config.surah_name} • {config.reciter_name}"
         else:
             meta_value = title_value
             if config.reciter_name:
@@ -2976,7 +4142,7 @@ def create_text_assets(config: RenderConfig, temp_dir: Path) -> dict[str, list[P
         config.verse_text,
         words_per_line=choose_arabic_words_per_line(config.verse_text, is_cinematic=is_cinematic),
     )
-    translation_text = wrap_text(config.translation, width=26 if is_cinematic else 34) if config.translation else ""
+    translation_text = wrap_text(config.translation, width=30 if is_cinematic else 34) if config.translation else ""
     brand_text = wrap_text(config.brand_text, width=24 if is_cinematic else 32) if config.show_brand else ""
 
     assets = {
@@ -3131,8 +4297,14 @@ def build_filter_complex(
 
     alpha_expression = build_alpha_expression(duration)
     filters = [base_filter]
+    use_timed_segment_overlays = bool(timed_segment_assets) and not config.prefer_static_text_overlay
+    use_segment_overlays = bool(segment_assets) and not config.prefer_static_text_overlay
 
-    meta_font_size = cinematic_meta_font_size if is_cinematic else 48
+    meta_font_size = (
+        max(22, cinematic_meta_font_size - 2)
+        if is_cinematic and config.prefer_static_text_overlay
+        else cinematic_meta_font_size if is_cinematic else 48
+    )
     meta_line_spacing = 8 if is_cinematic else 12
     filters.extend(
         build_text_block_filters(
@@ -3156,7 +4328,7 @@ def build_filter_complex(
     )
     previous_label = get_last_layer_label("meta_layer", text_assets["meta"], "base")
 
-    if timed_segment_assets:
+    if use_timed_segment_overlays:
         for index, segment_asset in enumerate(timed_segment_assets):
             segment_alpha = build_timed_alpha_expression(segment_asset.start_time, segment_asset.end_time)
 
@@ -3164,8 +4336,10 @@ def build_filter_complex(
                 len(segment_asset.arabic_lines),
                 is_cinematic=is_cinematic,
             )
-            translation_font_size = 48 if is_cinematic else 44
-            translation_line_spacing = 12 if is_cinematic else 12
+            translation_font_size, translation_line_spacing = resolve_translation_text_metrics(
+                len(segment_asset.translation_lines),
+                is_cinematic=is_cinematic,
+            )
             arabic_block_height = (len(segment_asset.arabic_lines) * (arabic_font_size + arabic_line_spacing)) - arabic_line_spacing
             preferred_arabic_top = ((VIDEO_HEIGHT - arabic_block_height) / 2) - (cinematic_arabic_offset if is_cinematic else 100)
             arabic_top, translation_top = resolve_text_stack_positions(
@@ -3223,7 +4397,7 @@ def build_filter_complex(
                 )
             )
             previous_label = get_last_layer_label(translation_prefix, segment_asset.translation_lines, previous_label)
-    elif segment_assets:
+    elif use_segment_overlays:
         intro_padding = 0.45
         outro_padding = 0.45
         available_duration = max(1.0, duration - intro_padding - outro_padding)
@@ -3238,8 +4412,10 @@ def build_filter_complex(
                 len(segment_asset.arabic_lines),
                 is_cinematic=is_cinematic,
             )
-            translation_font_size = 48 if is_cinematic else 44
-            translation_line_spacing = 12 if is_cinematic else 12
+            translation_font_size, translation_line_spacing = resolve_translation_text_metrics(
+                len(segment_asset.translation_lines),
+                is_cinematic=is_cinematic,
+            )
             arabic_block_height = (len(segment_asset.arabic_lines) * (arabic_font_size + arabic_line_spacing)) - arabic_line_spacing
             preferred_arabic_top = ((VIDEO_HEIGHT - arabic_block_height) / 2) - (cinematic_arabic_offset if is_cinematic else 100)
             arabic_top, translation_top = resolve_text_stack_positions(
@@ -3302,8 +4478,10 @@ def build_filter_complex(
             len(text_assets["verse"]),
             is_cinematic=is_cinematic,
         )
-        translation_font_size = 48 if is_cinematic else 40
-        translation_line_spacing = 12 if is_cinematic else 14
+        translation_font_size, translation_line_spacing = resolve_translation_text_metrics(
+            len(text_assets.get("translation", [])),
+            is_cinematic=is_cinematic,
+        )
         verse_block_height = (len(text_assets["verse"]) * (verse_font_size + verse_line_spacing)) - verse_line_spacing
         preferred_verse_top = ((VIDEO_HEIGHT - verse_block_height) / 2) - (cinematic_arabic_offset if is_cinematic else 110)
         verse_top, translation_top = resolve_text_stack_positions(
@@ -3346,16 +4524,16 @@ def build_filter_complex(
                     top_y=translation_top,
                     font_size=translation_font_size,
                     font_color="0xf8fafc",
-                    box_color=None,
+                    box_color=None if is_cinematic and config.prefer_static_text_overlay else "0x02061766" if is_cinematic else None,
                     alpha_expression=alpha_expression,
                     font_file=None if is_cinematic else config.font_file,
                     line_spacing=translation_line_spacing,
-                    box_border=0,
+                    box_border=0 if is_cinematic and config.prefer_static_text_overlay else 18 if is_cinematic else 0,
                     border_width=0 if is_cinematic else 1,
                     border_color="0x00000000" if is_cinematic else "0x111827cc",
                     shadow_x=0,
-                    shadow_y=8 if is_cinematic else 6,
-                    shadow_color="0x000000cc" if is_cinematic else "0x000000bb",
+                    shadow_y=10 if is_cinematic and config.prefer_static_text_overlay else 8 if is_cinematic else 6,
+                    shadow_color="0x000000ee" if is_cinematic and config.prefer_static_text_overlay else "0x000000cc" if is_cinematic else "0x000000bb",
                 )
             )
             previous_label = get_last_layer_label("translation_layer", text_assets["translation"], previous_label)
@@ -3503,6 +4681,7 @@ def main() -> int:
                 base_dir,
                 count=args.count,
                 target_seconds=args.target_seconds,
+                auto_reciter_library_file=args.auto_reciter_library_file,
             )
         else:
             config_path = Path(args.config).expanduser()
