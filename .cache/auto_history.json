@@ -271,5 +271,31 @@
     "tiktok_publish_id": "v_pub_file~v2-1.7625795426716878861",
     "tiktok_status": "PUBLISH_COMPLETE",
     "tiktok_privacy_level": "SELF_ONLY"
+  },
+  {
+    "created_at": "2026-04-07T20:51:47.467403+00:00",
+    "combo_key": "105:1-5:hani-ar-rifai",
+    "chapter_number": 105,
+    "chapter_name": "Al-Fil",
+    "verse_reference": "105:1-5",
+    "verse_start": 1,
+    "verse_end": 5,
+    "reciter_name": "Hani ar-Rifai",
+    "attribution_lines": [],
+    "background_path": "/home/runner/work/shortQuran/shortQuran/backgroundPhoto/WhatsApp Image 2026-04-06 at 00.35.46 (3).jpeg",
+    "style_preset": "cinematic_compact",
+    "title_template_key": "focus",
+    "title_text": "Quran Short | Al-Fil",
+    "target_seconds": 30.0,
+    "planned_duration_seconds": 27.87,
+    "output_path": "/home/runner/work/shortQuran/shortQuran/outputs/auto-01-105-001-005-al-fil-hani-ar-rifai.mp4",
+    "rendered_at": "2026-04-07T20:53:36.498919+00:00",
+    "youtube_video_id": "pC-8jF7HZH0",
+    "youtube_watch_url": "https://www.youtube.com/watch?v=pC-8jF7HZH0",
+    "youtube_privacy_status": "public",
+    "uploaded_at": "2026-04-07T20:53:36.498937+00:00",
+    "facebook_video_id": "934252956250501",
+    "facebook_status": "READY",
+    "facebook_video_state": "PUBLISHED"
   }
 ]
