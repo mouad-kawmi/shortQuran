@@ -3,7 +3,9 @@ name: Auto YouTube Shorts
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 20,23 * * *"
+    # 20:00, 23:00, 02:00 UTC => 21:00, 00:00, 03:00 in Africa/Casablanca
+    # while the local offset is UTC+1.
+    - cron: "0 20,23,2 * * *"
 
 permissions:
   contents: write
