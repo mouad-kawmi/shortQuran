@@ -74,10 +74,12 @@ jobs:
           fi
 
       - name: Generate And Upload Short
+        env:
+          ENABLE_TIKTOK_UPLOAD: ${{ secrets.ENABLE_TIKTOK_UPLOAD }}
         run: |
           EXTRA_PLATFORM_ARGS=""
           EXTRA_SOURCE_ARGS=""
-          if [ -f ./.secrets/tiktok-client-config.json ] && [ -f ./.secrets/tiktok-token.json ]; then
+          if [ "$ENABLE_TIKTOK_UPLOAD" = "true" ] && [ -f ./.secrets/tiktok-client-config.json ] && [ -f ./.secrets/tiktok-token.json ]; then
             EXTRA_PLATFORM_ARGS="$EXTRA_PLATFORM_ARGS --tiktok-upload --tiktok-client-config-file ./.secrets/tiktok-client-config.json --tiktok-token-file ./.secrets/tiktok-token.json"
           fi
           if [ -f ./.secrets/auto-reciters.json ]; then
