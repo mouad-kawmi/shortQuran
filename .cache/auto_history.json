@@ -346,5 +346,28 @@
     "youtube_watch_url": "https://www.youtube.com/watch?v=c4ocjl-5AyE",
     "youtube_privacy_status": "public",
     "uploaded_at": "2026-04-08T20:56:59.738371+00:00"
+  },
+  {
+    "created_at": "2026-04-08T23:49:50.362083+00:00",
+    "combo_key": "76:4-6:mishari-rashid-al--afasy",
+    "chapter_number": 76,
+    "chapter_name": "Al-Insan",
+    "verse_reference": "76:4-6",
+    "verse_start": 4,
+    "verse_end": 6,
+    "reciter_name": "Mishari Rashid al-`Afasy",
+    "attribution_lines": [],
+    "background_path": "/home/runner/work/shortQuran/shortQuran/backgroundPhoto/WhatsApp Image 2026-04-06 at 00.35.45.jpeg",
+    "style_preset": "cinematic_compact",
+    "title_template_key": "reciter",
+    "title_text": "Al-Insan Recitation | Mishari Rashid al-`Afasy",
+    "target_seconds": 30.0,
+    "planned_duration_seconds": 28.19,
+    "output_path": "/home/runner/work/shortQuran/shortQuran/outputs/auto-01-076-004-006-al-insan-mishari-rashid-al.mp4",
+    "rendered_at": "2026-04-08T23:50:33.877733+00:00",
+    "youtube_video_id": "WOfOt1EZl44",
+    "youtube_watch_url": "https://www.youtube.com/watch?v=WOfOt1EZl44",
+    "youtube_privacy_status": "public",
+    "uploaded_at": "2026-04-08T23:50:33.877747+00:00"
   }
 ]
