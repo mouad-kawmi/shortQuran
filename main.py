@@ -2982,10 +2982,15 @@ def finalize_showcase_render_config(
 
     # Prefer user-provided local backgrounds first, then fall back to Pexels/default.
     background_path: Path | None = None
-    recent_background_paths = set(
-        get_recent_history_values(history_entries, "background_path", limit=AUTO_RECENT_BACKGROUND_WINDOW)
+    used_background_paths = {
+        normalize_optional_text(entry.get("background_path"))
+        for entry in history_entries
+        if isinstance(entry, dict)
+    }
+    background_path = choose_random_library_background(
+        base_dir,
+        excluded_paths={path for path in used_background_paths if path},
     )
-    background_path = choose_random_library_background(base_dir, excluded_paths=recent_background_paths)
     if background_path is None:
         pexels_key = load_pexels_api_key(base_dir)
         if pexels_key:
@@ -3596,14 +3601,15 @@ def finalize_auto_render_config(
         )
         cursor += verse.duration
 
-    recent_background_paths = set(
-        get_recent_history_values(
-            history_entries,
-            "background_path",
-            limit=AUTO_RECENT_BACKGROUND_WINDOW,
-        )
+    used_background_paths = {
+        normalize_optional_text(entry.get("background_path"))
+        for entry in history_entries
+        if isinstance(entry, dict)
+    }
+    background_path = choose_random_library_background(
+        base_dir,
+        excluded_paths={path for path in used_background_paths if path},
     )
-    background_path = choose_random_library_background(base_dir, excluded_paths=recent_background_paths)
     if background_path is not None:
         print(f"Using local background from {background_path}")
     else:
