@@ -75,20 +75,13 @@ jobs:
             printf '%s' "$FACEBOOK_PAGE_CONFIG_JSON" > .secrets/facebook-page-config.json
           fi
 
-      - name: Generate And Upload Short
+      - name: Generate And Upload YouTube Short
         env:
           ENABLE_TIKTOK_UPLOAD: ${{ secrets.ENABLE_TIKTOK_UPLOAD }}
         run: |
           EXTRA_PLATFORM_ARGS=""
-          EXTRA_SOURCE_ARGS=""
           if [ "$ENABLE_TIKTOK_UPLOAD" = "true" ] && [ -f ./.secrets/tiktok-client-config.json ] && [ -f ./.secrets/tiktok-token.json ]; then
             EXTRA_PLATFORM_ARGS="$EXTRA_PLATFORM_ARGS --tiktok-upload --tiktok-client-config-file ./.secrets/tiktok-client-config.json --tiktok-token-file ./.secrets/tiktok-token.json"
-          fi
-          if [ -f ./.secrets/auto-reciters.json ]; then
-            EXTRA_SOURCE_ARGS="$EXTRA_SOURCE_ARGS --auto-reciter-library-file ./.secrets/auto-reciters.json"
-          fi
-          if [ -f ./.secrets/facebook-page-config.json ]; then
-            EXTRA_PLATFORM_ARGS="$EXTRA_PLATFORM_ARGS --facebook-upload --facebook-config-file ./.secrets/facebook-page-config.json"
           fi
           python ./main.py \
             --auto \
@@ -99,8 +92,21 @@ jobs:
             --youtube-token-file ./.secrets/youtube-token.json \
             --youtube-privacy-status public \
             --youtube-tags "quran,shorts,islam,quran recitation,peaceful quran" \
-            $EXTRA_SOURCE_ARGS \
             $EXTRA_PLATFORM_ARGS
+
+      - name: Generate And Upload Facebook Short
+        run: |
+          if [ -f ./.secrets/auto-reciters.json ] && [ -f ./.secrets/facebook-page-config.json ]; then
+            python ./main.py \
+              --auto \
+              --count 1 \
+              --target-seconds 60 \
+              --auto-reciter-library-file ./.secrets/auto-reciters.json \
+              --facebook-upload \
+              --facebook-config-file ./.secrets/facebook-page-config.json
+          else
+            echo "Missing auto reciter library or Facebook config, skipping Facebook upload."
+          fi
 
       - name: Persist Auto History
         run: |
