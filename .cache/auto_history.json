@@ -323,5 +323,28 @@
     "facebook_video_id": "1005056905179210",
     "facebook_status": "READY",
     "facebook_video_state": "PUBLISHED"
+  },
+  {
+    "created_at": "2026-04-08T20:56:21.139780+00:00",
+    "combo_key": "101:3-4:abdulbaset-abdulsamad",
+    "chapter_number": 101,
+    "chapter_name": "Al-Qari'ah",
+    "verse_reference": "101:3-4",
+    "verse_start": 3,
+    "verse_end": 4,
+    "reciter_name": "AbdulBaset AbdulSamad",
+    "attribution_lines": [],
+    "background_path": "/home/runner/work/shortQuran/shortQuran/backgroundPhoto/WhatsApp Image 2026-04-06 at 00.35.46 (2).jpeg",
+    "style_preset": "cinematic_spacious",
+    "title_template_key": "ayah",
+    "title_text": "Al-Qari'ah | Ayat 3-4",
+    "target_seconds": 30.0,
+    "planned_duration_seconds": 24.83,
+    "output_path": "/home/runner/work/shortQuran/shortQuran/outputs/auto-01-101-003-004-al-qari-ah-abdulbaset-abdulsa.mp4",
+    "rendered_at": "2026-04-08T20:56:59.738359+00:00",
+    "youtube_video_id": "c4ocjl-5AyE",
+    "youtube_watch_url": "https://www.youtube.com/watch?v=c4ocjl-5AyE",
+    "youtube_privacy_status": "public",
+    "uploaded_at": "2026-04-08T20:56:59.738371+00:00"
   }
 ]
