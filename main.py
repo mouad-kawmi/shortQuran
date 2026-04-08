@@ -25,11 +25,15 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlencode, unquote, urlparse
 from urllib.request import Request, urlopen
 
+import arabic_reshaper
+from bidi.algorithm import get_display
+
+
 VIDEO_WIDTH = 1080
 VIDEO_HEIGHT = 1920
 DEFAULT_FPS = 30
-DEFAULT_TARGET_DURATION = 24.0
-AUTO_MIN_DURATION = 16.0
+DEFAULT_TARGET_DURATION = 60.0
+AUTO_MIN_DURATION = 45.0
 AUTO_DURATION_OVERSHOOT_TOLERANCE = 4.0
 QURAN_API_BASE_URL = "https://api.quran.com/api/v4"
 PUBLIC_TRANSLATION_API_BASE_URL = "https://api.alquran.cloud/v1"
@@ -53,10 +57,16 @@ AUTO_TITLE_TEMPLATES = {
     "focus": "Quran Short | {chapter_name}",
     "ayah": "{chapter_name} | Ayat {verse_range_label}",
 }
-AUTO_MIN_TARGET_SECONDS = 18.0
-AUTO_MAX_TARGET_SECONDS = 30.0
+AUTO_MIN_TARGET_SECONDS = 45.0
+AUTO_MAX_TARGET_SECONDS = 90.0
+AUTO_MIN_VERSES_COUNT = 70
+LONG_SURAH_IDS = {
+    2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
+    15, 16, 17, 18, 19, 20, 21, 22, 23, 25, 26, 27, 28,
+    33, 36, 37, 38, 39, 40, 43, 55, 56,
+}
 AUTO_MAX_WHOLE_SURAH_DURATION = 60.0
-AUTO_STATIC_WHOLE_SURAH_MAX_QURAN_VERSES = 4
+AUTO_STATIC_WHOLE_SURAH_MAX_QURAN_VERSES = 12
 AUTO_RECENT_CHAPTER_WINDOW = 6
 AUTO_RECENT_RECITER_WINDOW = 3
 AUTO_RECENT_BACKGROUND_WINDOW = 6
@@ -91,7 +101,8 @@ CONTENT_TYPE_EXTENSIONS = {
     "application/octet-stream": "",
 }
 VERSES_AUDIO_BASE_URL = "https://verses.quran.foundation/"
-DEFAULT_ARABIC_FONT_URL = "https://raw.githubusercontent.com/google/fonts/main/ofl/amiri/Amiri-Regular.ttf"
+DEFAULT_ARABIC_FONT_URL = "https://cdn.jsdelivr.net/gh/thetruetruth/quran-data-kfgqpc@main/hafs/font/hafs.18.ttf"
+DEFAULT_LATIN_FONT_URL = "https://github.com/googlefonts/noto-fonts/raw/master/unhinted/ttf/NotoSans/NotoSans-Regular.ttf"
 PEXELS_API_BASE_URL = "https://api.pexels.com/videos"
 DEFAULT_PEXELS_API_KEY_FILE = ".secrets/pexels-api-key.txt"
 PEXELS_NATURE_QUERIES = ("nature", "river mountains", "forest", "ocean waves", "rain forest", "sky clouds", "sunrise", "waterfall", "desert", "green nature")
@@ -243,6 +254,7 @@ class RenderConfig:
     reciter_name: str | None = None
     background_path: Path | None = None
     font_file: Path | None = None
+    latin_font_file: Path | None = None
     brand_text: str = "shortQuran"
     title_text: str | None = None
     fps: int = DEFAULT_FPS
@@ -300,6 +312,11 @@ class RenderConfig:
         if font_url_value is None and local_font_path is None:
             font_url_value = DEFAULT_ARABIC_FONT_URL
 
+        latin_font_url_value = normalize_optional_text(payload.get("latin_font_url"))
+        local_latin_font_path = resolve_optional_local_path(config_dir, payload.get("latin_font_file"))
+        if latin_font_url_value is None and local_latin_font_path is None:
+            latin_font_url_value = DEFAULT_LATIN_FONT_URL
+
         audio_path = resolve_asset_path(
             config_dir=config_dir,
             cache_dir=cache_dir,
@@ -325,12 +342,20 @@ class RenderConfig:
             asset_name="font",
             required=False,
         )
+        latin_font_file = resolve_asset_path(
+            config_dir=config_dir,
+            cache_dir=cache_dir,
+            local_value=payload.get("latin_font_file"),
+            url_value=latin_font_url_value,
+            asset_name="font",
+            required=False,
+        )
 
         fps = int(payload.get("fps", DEFAULT_FPS))
         if fps <= 0:
             raise ValueError("fps must be greater than zero")
 
-        verse_text = require_non_empty_text(payload["verse_text"], "verse_text")
+        verse_text = clean_quranic_text(require_non_empty_text(payload["verse_text"], "verse_text"))
         surah_name = require_non_empty_text(payload["surah_name"], "surah_name")
         reciter_name = str(payload["reciter_name"]).strip() if payload.get("reciter_name") else None
         if not reciter_name:
@@ -350,6 +375,7 @@ class RenderConfig:
             reciter_name=reciter_name,
             background_path=background_path,
             font_file=font_file,
+            latin_font_file=latin_font_file,
             brand_text=str(payload.get("brand_text", "shortQuran")).strip() or "shortQuran",
             title_text=str(payload["title_text"]).strip() if payload.get("title_text") else None,
             fps=fps,
@@ -614,6 +640,20 @@ def normalize_optional_text(value: object) -> str | None:
 
     cleaned = str(value).strip()
     return cleaned or None
+
+
+def clean_quranic_text(text: str) -> str:
+    if not text:
+        return ""
+    # Remove special Quranic tajweed marks only
+    text = re.sub(r"[\u06d6-\u06ed]", "", text)
+    
+    return text
+
+
+
+
+
 
 
 def parse_optional_datetime(value: object, *, field_name: str) -> datetime | None:
@@ -2235,6 +2275,37 @@ def find_windows_binary(binary_name: str) -> Path | None:
     return None
 
 
+def pad_audio_to_duration(
+    audio_path: Path,
+    *,
+    target_seconds: float,
+    ffmpeg_command: str,
+    ffprobe_command: str,
+) -> Path:
+    if target_seconds <= 0:
+        return audio_path
+    duration = probe_duration(audio_path, ffprobe_command)
+    if duration >= (target_seconds - 0.05):
+        return audio_path
+
+    padded_path = audio_path.with_name(f"{audio_path.stem}-pad{audio_path.suffix}")
+    pad_duration = max(0.0, target_seconds - duration)
+    filter_chain = f"apad=pad_dur={pad_duration:.3f},atrim=0:{target_seconds:.3f}"
+    command = [
+        ffmpeg_command,
+        "-y",
+        "-i",
+        str(audio_path),
+        "-filter_complex",
+        filter_chain,
+        "-t",
+        f"{target_seconds:.3f}",
+        str(padded_path),
+    ]
+    run_command(command)
+    return padded_path
+
+
 def build_verse_audio_url(
     relative_path: str,
     surah_number: int,
@@ -2605,12 +2676,42 @@ def get_verse_number_from_key(verse_key: str) -> int:
     return int(verse_number)
 
 
+def parse_int_fallback(value: object) -> int:
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, str):
+        cleaned = re.sub(r"\D", "", value)
+        if cleaned:
+            return int(cleaned)
+    return 0
+
+
 def fetch_auto_chapters() -> list[dict[str, object]]:
     payload = fetch_quran_api_json("/chapters")
     chapters = payload.get("chapters")
     if not isinstance(chapters, list) or not chapters:
         raise RuntimeError("Quran API did not return any chapters.")
     return chapters
+
+
+def chapter_meets_minimum_verses(chapter: dict[str, object], minimum_verses: int) -> bool:
+    chapter_id = parse_int_fallback(
+        chapter.get("id")
+        or chapter.get("chapter_id")
+        or chapter.get("chapter_number")
+    )
+    verses_count = parse_int_fallback(
+        chapter.get("verses_count")
+        or chapter.get("verses")
+    )
+
+    if verses_count:
+        return verses_count >= minimum_verses
+    if chapter_id in LONG_SURAH_IDS:
+        return True
+    return False
 
 
 def fetch_auto_reciters() -> list[AutoReciter]:
@@ -2894,6 +2995,8 @@ def finalize_showcase_render_config(
         background_path = download_asset(DEFAULT_BACKGROUND_URL, cache_dir / "background", "background")
 
     font_file = download_asset(DEFAULT_ARABIC_FONT_URL, cache_dir / "font", "font")
+    latin_font_file = download_asset(DEFAULT_LATIN_FONT_URL, cache_dir / "font", "font")
+    latin_font_file = download_asset(DEFAULT_LATIN_FONT_URL, cache_dir / "font", "font")
 
     title_text = f"{arabic_surah_name} | {chapter_name} | {reciter.reciter_name}"
     history_entry = {
@@ -2924,6 +3027,7 @@ def finalize_showcase_render_config(
         reciter_name=reciter.reciter_name,
         background_path=background_path,
         font_file=font_file,
+        latin_font_file=latin_font_file,
         brand_text="shortQuran",
         title_text=title_text,
         fps=DEFAULT_FPS,
@@ -3087,7 +3191,7 @@ def estimate_whole_surah_verse_durations(
 
     weights: list[float] = []
     for verse_payload in verse_payloads:
-        arabic = normalize_optional_text(verse_payload.get("text_uthmani")) or ""
+        arabic = clean_quranic_text(normalize_optional_text(verse_payload.get("text_uthmani")) or "")
         word_count = len([word for word in arabic.split() if word.strip()])
         weights.append(float(max(word_count, 1)))
 
@@ -3118,7 +3222,7 @@ def estimate_intro_duration(
 
     verse_word_total = 0
     for verse_payload in verse_payloads:
-        arabic = normalize_optional_text(verse_payload.get("text_uthmani")) or ""
+        arabic = clean_quranic_text(normalize_optional_text(verse_payload.get("text_uthmani")) or "")
         verse_word_total += max(len([word for word in arabic.split() if word.strip()]), 1)
 
     total_weight = intro_word_count + max(verse_word_total, 1)
@@ -3217,7 +3321,7 @@ def collect_auto_verses(
         if not audio_url and local_audio_path is None:
             raise RuntimeError(f"Could not find audio URL for {verse_key} with reciter {reciter.reciter_name}.")
 
-        arabic = require_non_empty_text(verse_payload.get("text_uthmani", ""), f"text_uthmani for {verse_key}")
+        arabic = clean_quranic_text(require_non_empty_text(verse_payload.get("text_uthmani", ""), f"text_uthmani for {verse_key}"))
         word_count = len(arabic.split())
         if word_count > 16:
             if selected_verses and total_duration >= minimum_duration:
@@ -3227,9 +3331,6 @@ def collect_auto_verses(
         translation = extract_translation_text(verse_payload) or translation_map.get(verse_key, "")
         audio_path = local_audio_path or download_asset(audio_url, cache_dir / "audio", "audio")
         duration = probe_duration(audio_path, ffprobe_command)
-
-        if selected_verses and total_duration >= minimum_duration and (total_duration + duration) > (target_seconds + AUTO_DURATION_OVERSHOOT_TOLERANCE):
-            break
 
         selected_verses.append(
             AutoVerse(
@@ -3249,14 +3350,6 @@ def collect_auto_verses(
 
     if not selected_verses:
         raise RuntimeError("Automatic verse selection returned no verses.")
-
-    if len(selected_verses) > 1:
-        trimmed_duration = total_duration - selected_verses[-1].duration
-        if (
-            trimmed_duration >= minimum_duration
-            and abs(trimmed_duration - target_seconds) < abs(total_duration - target_seconds)
-        ):
-            selected_verses.pop()
 
     final_duration = sum(verse.duration for verse in selected_verses)
     if final_duration < minimum_duration:
@@ -3309,7 +3402,7 @@ def collect_auto_whole_surah_verses(
     quran_verses: list[AutoVerse] = []
     for verse_payload, verse_duration in zip(verse_payloads, verse_durations):
         verse_key = require_non_empty_text(verse_payload.get("verse_key", ""), f"verse_key for chapter {chapter_number}")
-        arabic = require_non_empty_text(verse_payload.get("text_uthmani", ""), f"text_uthmani for {verse_key}")
+        arabic = clean_quranic_text(require_non_empty_text(verse_payload.get("text_uthmani", ""), f"text_uthmani for {verse_key}"))
         translation = extract_translation_text(verse_payload) or translation_map.get(verse_key, "")
         quran_verses.append(
             AutoVerse(
@@ -3433,6 +3526,7 @@ def finalize_auto_render_config(
     selected_verses: list[AutoVerse],
     selected_target_seconds: float,
     ffmpeg_command: str,
+    ffprobe_command: str,
     source_audio_path: Path | None = None,
     source_start_time: float | None = None,
     source_end_time: float | None = None,
@@ -3492,15 +3586,14 @@ def finalize_auto_render_config(
     timed_segments: list[TimedSegment] = []
     cursor = 0.0
     for verse in selected_verses:
-        if not use_static_source_audio:
-            timed_segments.append(
-                TimedSegment(
-                    arabic=verse.arabic,
-                    translation=verse.translation,
-                    start_time=cursor,
-                    end_time=cursor + verse.duration,
-                )
+        timed_segments.append(
+            TimedSegment(
+                arabic=verse.arabic,
+                translation=verse.translation,
+                start_time=cursor,
+                end_time=cursor + verse.duration,
             )
+        )
         cursor += verse.duration
 
     recent_background_paths = set(
@@ -3690,13 +3783,11 @@ def build_auto_render_config(
         verses_count = int(chapter.get("verses_count") or 0)
         chapter_name = normalize_optional_text(chapter.get("name_simple")) or f"Surah {chapter_number}"
         if chapter_number <= 0 or verses_count <= 0:
-                continue
+            continue
 
-        selected_target_seconds = (
-            target_seconds
-            if reciter.showcase_only
-            else choose_auto_target_seconds(target_seconds, history_entries)
-        )
+        selected_target_seconds = target_seconds
+        if not reciter.showcase_only and target_seconds < 60:
+            selected_target_seconds = choose_auto_target_seconds(target_seconds, history_entries)
         try:
             if reciter.showcase_only:
                 showcase_audio_path = whole_surah_files.get(chapter_number)
@@ -3747,6 +3838,7 @@ def build_auto_render_config(
                     selected_verses=selected_verses,
                     selected_target_seconds=selected_target_seconds,
                     ffmpeg_command=ffmpeg_command,
+                    ffprobe_command=ffprobe_command,
                     source_audio_path=whole_surah_audio_path,
                     source_start_time=whole_surah_clip_start,
                     source_end_time=whole_surah_clip_end,
@@ -3775,6 +3867,7 @@ def build_auto_render_config(
                 selected_verses=selected_verses,
                 selected_target_seconds=selected_target_seconds,
                 ffmpeg_command=ffmpeg_command,
+                ffprobe_command=ffprobe_command,
             )
         except Exception as error:  # noqa: BLE001
             last_error = error
@@ -3796,6 +3889,8 @@ def build_auto_render_configs(
         raise ValueError("'count' must be greater than zero.")
     if target_seconds <= 0:
         raise ValueError("'target-seconds' must be greater than zero.")
+    if target_seconds < 60:
+        target_seconds = 60.0
 
     ffmpeg_command = resolve_binary_command("ffmpeg")
     ffprobe_command = resolve_binary_command("ffprobe")
@@ -3823,8 +3918,25 @@ def build_auto_render_configs(
             for chapter in all_chapters
             if int(chapter.get("id") or 0) >= DEFAULT_AUTO_CHAPTER_MIN
         ]
+    chapters = [
+        chapter
+        for chapter in chapters
+        if chapter_meets_minimum_verses(chapter, AUTO_MIN_VERSES_COUNT)
+    ]
     if not chapters:
-        raise RuntimeError("No chapters are available for automatic cinematic mode.")
+        chapters = [
+            chapter
+            for chapter in all_chapters
+            if parse_int_fallback(
+                chapter.get("id")
+                or chapter.get("chapter_id")
+                or chapter.get("chapter_number")
+            ) in LONG_SURAH_IDS
+        ]
+    if not chapters:
+        raise RuntimeError(
+            "No chapters are available for automatic cinematic mode after enforcing the minimum verse count."
+        )
     history_entries = load_auto_history(base_dir)
     configs: list[RenderConfig] = []
     planned_history_entries = list(history_entries)
@@ -3861,7 +3973,7 @@ def wrap_arabic_text(text: str, words_per_line: int) -> str:
     lines = []
     for index in range(0, len(words), words_per_line):
         lines.append(" ".join(words[index : index + words_per_line]))
-    return "\n".join(lines)
+    return "\n".join(reversed(lines))
 
 
 def choose_arabic_words_per_line(text: str, *, is_cinematic: bool) -> int:
@@ -3880,16 +3992,16 @@ def resolve_arabic_text_metrics(line_count: int, *, is_cinematic: bool) -> tuple
         return 88, 24
 
     if line_count >= 7:
-        return 68, 24
+        return 72, 26
     if line_count == 6:
-        return 74, 26
+        return 78, 28
     if line_count >= 5:
-        return 80, 30
+        return 84, 32
     if line_count == 4:
-        return 88, 28
+        return 92, 30
     if line_count == 3:
-        return 96, 24
-    return 108, 20
+        return 100, 26
+    return 112, 22
 
 
 def resolve_translation_text_metrics(line_count: int, *, is_cinematic: bool) -> tuple[int, int]:
@@ -3988,6 +4100,7 @@ def build_drawtext_filter(
         f"fontsize={font_size}:"
         f"line_spacing={line_spacing}:"
         f"text_shaping=1:"
+
         f"{box_part}"
         f"borderw={border_width}:"
         f"bordercolor={border_color}:"
@@ -4145,6 +4258,7 @@ def create_text_assets(config: RenderConfig, temp_dir: Path) -> dict[str, list[P
             if config.reciter_name:
                 meta_value = f"{title_value}\nReciter: {config.reciter_name}"
         meta_text = wrap_text(meta_value, width=24 if is_cinematic else 36)
+
 
     verse_text = wrap_arabic_text(
         config.verse_text,
@@ -4394,7 +4508,7 @@ def build_filter_complex(
                     font_color="0xf8fafc",
                     box_color=None if is_cinematic else "0x00000022",
                     alpha_expression=segment_alpha,
-                    font_file=None if is_cinematic else config.font_file,
+                    font_file=config.latin_font_file or (None if is_cinematic else config.font_file),
                     line_spacing=translation_line_spacing,
                     box_border=0 if is_cinematic else 12,
                     border_width=0 if is_cinematic else 1,
@@ -4470,7 +4584,7 @@ def build_filter_complex(
                     font_color="0xf8fafc",
                     box_color=None if is_cinematic else "0x00000022",
                     alpha_expression=segment_alpha,
-                    font_file=None if is_cinematic else config.font_file,
+                    font_file=config.latin_font_file or (None if is_cinematic else config.font_file),
                     line_spacing=translation_line_spacing,
                     box_border=0 if is_cinematic else 12,
                     border_width=0 if is_cinematic else 1,
@@ -4558,7 +4672,7 @@ def build_filter_complex(
             font_color="0x90e0ef",
             box_color=None,
             alpha_expression=alpha_expression,
-            font_file=config.font_file,
+            font_file=config.latin_font_file or config.font_file,
             line_spacing=brand_line_spacing,
             box_border=0,
             border_width=1,
