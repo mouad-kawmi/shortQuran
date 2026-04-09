@@ -4018,14 +4018,38 @@ def wrap_text(text: str, width: int) -> str:
     return textwrap.fill(cleaned, width=width, break_long_words=False, break_on_hyphens=False)
 
 
-def wrap_arabic_text(text: str, words_per_line: int) -> str:
+def estimate_arabic_word_units(word: str) -> int:
+    base_letters = re.sub(r"[\u0640\u064b-\u065f\u0670]", "", word)
+    return max(1, len(base_letters))
+
+
+def wrap_arabic_text(text: str, words_per_line: int, *, max_line_units: int | None = None) -> str:
     words = [word for word in text.split() if word.strip()]
     if not words:
         return ""
 
-    lines = []
-    for index in range(0, len(words), words_per_line):
-        lines.append(" ".join(words[index : index + words_per_line]))
+    lines: list[str] = []
+    current_words: list[str] = []
+    current_units = 0
+
+    for word in words:
+        word_units = estimate_arabic_word_units(word)
+        projected_units = current_units + word_units + (1 if current_words else 0)
+        hit_word_limit = len(current_words) >= words_per_line
+        hit_width_limit = max_line_units is not None and current_words and projected_units > max_line_units
+
+        if current_words and (hit_word_limit or hit_width_limit):
+            lines.append(" ".join(current_words))
+            current_words = [word]
+            current_units = word_units
+            continue
+
+        current_words.append(word)
+        current_units = projected_units
+
+    if current_words:
+        lines.append(" ".join(current_words))
+
     return "\n".join(reversed(lines))
 
 
@@ -4040,21 +4064,66 @@ def choose_arabic_words_per_line(text: str, *, is_cinematic: bool) -> int:
     return 4
 
 
-def resolve_arabic_text_metrics(line_count: int, *, is_cinematic: bool) -> tuple[int, int]:
+def choose_arabic_line_unit_budget(text: str, *, is_cinematic: bool) -> int:
+    word_count = len([word for word in text.split() if word.strip()])
     if not is_cinematic:
-        return 88, 24
+        if word_count <= 5:
+            return 24
+        if word_count <= 10:
+            return 21
+        return 19
 
-    if line_count >= 7:
-        return 72, 26
-    if line_count == 6:
-        return 78, 28
-    if line_count >= 5:
-        return 84, 32
-    if line_count == 4:
-        return 92, 30
-    if line_count == 3:
-        return 100, 26
-    return 112, 22
+    if word_count <= 4:
+        return 22
+    if word_count <= 8:
+        return 19
+    if word_count <= 12:
+        return 17
+    return 15
+
+
+def measure_arabic_line_units(text: str) -> int:
+    max_units = 0
+    for line in text.splitlines():
+        line_units = sum(estimate_arabic_word_units(word) for word in line.split())
+        max_units = max(max_units, line_units)
+    return max_units
+
+
+def build_wrapped_arabic_text(text: str, *, is_cinematic: bool) -> str:
+    return wrap_arabic_text(
+        text,
+        words_per_line=choose_arabic_words_per_line(text, is_cinematic=is_cinematic),
+        max_line_units=choose_arabic_line_unit_budget(text, is_cinematic=is_cinematic),
+    )
+
+
+def resolve_arabic_text_metrics(line_count: int, *, is_cinematic: bool, max_line_units: int) -> tuple[int, int]:
+    if not is_cinematic:
+        font_size, line_spacing = 88, 24
+    elif line_count >= 7:
+        font_size, line_spacing = 72, 26
+    elif line_count == 6:
+        font_size, line_spacing = 78, 28
+    elif line_count >= 5:
+        font_size, line_spacing = 84, 32
+    elif line_count == 4:
+        font_size, line_spacing = 92, 30
+    elif line_count == 3:
+        font_size, line_spacing = 100, 26
+    else:
+        font_size, line_spacing = 112, 22
+
+    if max_line_units >= 22:
+        font_size -= 16
+    elif max_line_units >= 20:
+        font_size -= 12
+    elif max_line_units >= 18:
+        font_size -= 8
+    elif max_line_units >= 16:
+        font_size -= 4
+
+    return max(62 if is_cinematic else 70, font_size), line_spacing
 
 
 def resolve_translation_text_metrics(line_count: int, *, is_cinematic: bool) -> tuple[int, int]:
@@ -4153,7 +4222,7 @@ def build_drawtext_filter(
         f"fontsize={font_size}:"
         f"line_spacing={line_spacing}:"
         f"text_shaping=0:"
-
+        f"fix_bounds=1:"
         f"{box_part}"
         f"borderw={border_width}:"
         f"bordercolor={border_color}:"
@@ -4312,11 +4381,7 @@ def create_text_assets(config: RenderConfig, temp_dir: Path) -> dict[str, list[P
                 meta_value = f"{title_value}\nReciter: {config.reciter_name}"
         meta_text = wrap_text(meta_value, width=24 if is_cinematic else 36)
 
-
-    verse_text = wrap_arabic_text(
-        config.verse_text,
-        words_per_line=choose_arabic_words_per_line(config.verse_text, is_cinematic=is_cinematic),
-    )
+    verse_text = build_wrapped_arabic_text(config.verse_text, is_cinematic=is_cinematic)
     translation_text = wrap_text(config.translation, width=30 if is_cinematic else 34) if config.translation else ""
     brand_text = wrap_text(config.brand_text, width=24 if is_cinematic else 32) if config.show_brand else ""
 
@@ -4339,10 +4404,7 @@ def create_segment_assets(config: RenderConfig, temp_dir: Path) -> list[SegmentT
     is_cinematic = is_cinematic_style(config.style_preset)
     segment_assets: list[SegmentTextAsset] = []
     for index, segment in enumerate(config.word_segments):
-        arabic_text = wrap_arabic_text(
-            segment.arabic,
-            words_per_line=choose_arabic_words_per_line(segment.arabic, is_cinematic=is_cinematic),
-        )
+        arabic_text = build_wrapped_arabic_text(segment.arabic, is_cinematic=is_cinematic)
         translation_text = wrap_text(segment.translation, width=26 if is_cinematic else 28)
         segment_assets.append(
             SegmentTextAsset(
@@ -4361,10 +4423,7 @@ def create_timed_segment_assets(config: RenderConfig, temp_dir: Path) -> list[Ti
     is_cinematic = is_cinematic_style(config.style_preset)
     timed_assets: list[TimedSegmentTextAsset] = []
     for index, segment in enumerate(config.timed_segments):
-        arabic_text = wrap_arabic_text(
-            segment.arabic,
-            words_per_line=choose_arabic_words_per_line(segment.arabic, is_cinematic=is_cinematic),
-        )
+        arabic_text = build_wrapped_arabic_text(segment.arabic, is_cinematic=is_cinematic)
         translation_text = wrap_text(segment.translation, width=26 if is_cinematic else 28)
         timed_assets.append(
             TimedSegmentTextAsset(
@@ -4510,6 +4569,7 @@ def build_filter_complex(
             arabic_font_size, arabic_line_spacing = resolve_arabic_text_metrics(
                 len(segment_asset.arabic_lines),
                 is_cinematic=is_cinematic,
+                max_line_units=measure_arabic_line_units("\n".join(path.read_text(encoding="utf-8") for path in segment_asset.arabic_lines)),
             )
             translation_font_size, translation_line_spacing = resolve_translation_text_metrics(
                 len(segment_asset.translation_lines),
@@ -4586,6 +4646,7 @@ def build_filter_complex(
             arabic_font_size, arabic_line_spacing = resolve_arabic_text_metrics(
                 len(segment_asset.arabic_lines),
                 is_cinematic=is_cinematic,
+                max_line_units=measure_arabic_line_units("\n".join(path.read_text(encoding="utf-8") for path in segment_asset.arabic_lines)),
             )
             translation_font_size, translation_line_spacing = resolve_translation_text_metrics(
                 len(segment_asset.translation_lines),
@@ -4652,6 +4713,7 @@ def build_filter_complex(
         verse_font_size, verse_line_spacing = resolve_arabic_text_metrics(
             len(text_assets["verse"]),
             is_cinematic=is_cinematic,
+            max_line_units=measure_arabic_line_units("\n".join(path.read_text(encoding="utf-8") for path in text_assets["verse"])),
         )
         translation_font_size, translation_line_spacing = resolve_translation_text_metrics(
             len(text_assets.get("translation", [])),
