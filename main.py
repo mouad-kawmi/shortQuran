@@ -25,8 +25,6 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlencode, unquote, urlparse
 from urllib.request import Request, urlopen
 
-import arabic_reshaper
-from bidi.algorithm import get_display
 
 
 VIDEO_WIDTH = 1080
