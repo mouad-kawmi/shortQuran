@@ -3336,7 +3336,13 @@ def collect_auto_verses(
             raise RuntimeError(f"Verse {verse_key} is too long for cinematic automatic mode.")
 
         translation = extract_translation_text(verse_payload) or translation_map.get(verse_key, "")
-        audio_path = local_audio_path or download_asset(audio_url, cache_dir / "audio", "audio")
+        try:
+            audio_path = local_audio_path or download_asset(audio_url, cache_dir / "audio", "audio")
+        except Exception as error:  # noqa: BLE001
+            if selected_verses and total_duration >= minimum_duration:
+                break
+            current_ayah += 1
+            continue
         duration = probe_duration(audio_path, ffprobe_command)
 
         if selected_verses and (total_duration + duration) > target_seconds:
