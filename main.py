@@ -101,7 +101,7 @@ CONTENT_TYPE_EXTENSIONS = {
     "application/octet-stream": "",
 }
 VERSES_AUDIO_BASE_URL = "https://verses.quran.foundation/"
-DEFAULT_ARABIC_FONT_URL = "https://cdn.jsdelivr.net/gh/thetruetruth/quran-data-kfgqpc@main/hafs/font/hafs.18.ttf"
+DEFAULT_ARABIC_FONT_URL = "https://raw.githubusercontent.com/google/fonts/main/ofl/notosansarabic/NotoSansArabic-Regular.ttf"
 DEFAULT_LATIN_FONT_URL = "https://github.com/googlefonts/noto-fonts/raw/master/unhinted/ttf/NotoSans/NotoSans-Regular.ttf"
 PEXELS_API_BASE_URL = "https://api.pexels.com/videos"
 DEFAULT_PEXELS_API_KEY_FILE = ".secrets/pexels-api-key.txt"
@@ -3339,6 +3339,9 @@ def collect_auto_verses(
         audio_path = local_audio_path or download_asset(audio_url, cache_dir / "audio", "audio")
         duration = probe_duration(audio_path, ffprobe_command)
 
+        if selected_verses and (total_duration + duration) > target_seconds:
+            break
+
         selected_verses.append(
             AutoVerse(
                 verse_key=verse_key,
@@ -3588,6 +3591,18 @@ def finalize_auto_render_config(
             )
         else:
             audio_output = source_audio_path
+
+    audio_duration = probe_duration(audio_output, ffprobe_command)
+    if audio_duration > (selected_target_seconds + 0.05):
+        trimmed_output = cache_dir / "compiled_audio" / f"{audio_output.stem}-trim{audio_output.suffix}"
+        trim_audio_segment(
+            audio_output,
+            trimmed_output,
+            start_time=0.0,
+            end_time=selected_target_seconds,
+            ffmpeg_command=ffmpeg_command,
+        )
+        audio_output = trimmed_output
 
     use_static_source_audio = source_audio_path is not None
     timed_segments: list[TimedSegment] = []
