@@ -18,12 +18,13 @@ import tempfile
 import textwrap
 import time
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 from functools import lru_cache
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlencode, unquote, urlparse
 from urllib.request import Request, urlopen
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import arabic_reshaper
 from bidi.algorithm import get_display
@@ -51,11 +52,34 @@ AUTO_STYLE_PRESETS = (
     "cinematic_compact",
     "cinematic_spacious",
 )
+AUTO_TITLE_HOOKS = {
+    "calm": "Calm Quran Recitation",
+    "reflect": "Verses to Reflect On",
+    "heart": "A Recitation for the Heart",
+    "reminder": "A Quran Reminder for Today",
+}
 AUTO_TITLE_TEMPLATES = {
-    "reference": "{chapter_name} | {verse_reference}",
-    "reciter": "{chapter_name} Recitation | {reciter_name}",
-    "focus": "Quran Short | {chapter_name}",
-    "ayah": "{chapter_name} | Ayat {verse_range_label}",
+    "hook_reference": "{hook} | {chapter_name} {verse_reference}",
+    "hook_reciter": "{hook} | {chapter_name} | {reciter_name}",
+    "surah_focus": "{chapter_name} | {hook}",
+    "ayah_focus": "{chapter_name} | Ayat {verse_range_label} | {hook}",
+}
+AUTO_DESCRIPTION_HOOKS = {
+    "pause": "Pause for a minute and listen to these verses with focus.",
+    "calm": "A calm Quran recitation for quiet reflection.",
+    "heart": "A short reminder to soften the heart and reset the mind.",
+    "reflect": "Verses worth revisiting when you need perspective.",
+}
+AUTO_DESCRIPTION_TEMPLATES = {
+    "meaning_first": "{hook_line}\n\nSurah: {chapter_name}\nAyat: {verse_reference}\nReciter: {reciter_name}\n\nMeaning:\n{translation_excerpt}\n\n{cta}",
+    "reciter_first": "{hook_line}\n\nListen to {chapter_name} ({verse_reference}) recited by {reciter_name}.\n\nMeaning:\n{translation_excerpt}\n\n{cta}",
+    "short_reflection": "{hook_line}\n\n{chapter_name} | {verse_reference}\nMeaning:\n{translation_excerpt}\n\n{cta}",
+}
+AUTO_CTA_LINES = {
+    "share": "If this recitation brings you peace, share it with someone you care about.",
+    "save": "Save this short so you can return to it when you need a quiet reminder.",
+    "repeat": "Listen again, reflect slowly, and keep the Quran close to your day.",
+    "comment": "If this verse touched you, leave a short reminder in the comments.",
 }
 AUTO_MIN_TARGET_SECONDS = 45.0
 AUTO_MAX_TARGET_SECONDS = 90.0
@@ -72,7 +96,16 @@ AUTO_RECENT_RECITER_WINDOW = 3
 AUTO_RECENT_BACKGROUND_WINDOW = 6
 AUTO_RECENT_STYLE_WINDOW = 2
 AUTO_RECENT_TITLE_WINDOW = 3
+AUTO_RECENT_METADATA_WINDOW = 4
 AUTO_RECENT_SHOWCASE_START_WINDOW = 4
+AUTO_DESCRIPTION_EXCERPT_CHARS = 220
+DEFAULT_YOUTUBE_AUTO_SCHEDULE_PRESET = "ma_mena_prime"
+DEFAULT_YOUTUBE_AUTO_SCHEDULE_TIMEZONE = "Africa/Casablanca"
+DEFAULT_YOUTUBE_AUTO_SCHEDULE_BUFFER_MINUTES = 30
+YOUTUBE_AUTO_SCHEDULE_PRESETS = {
+    "ma_mena_prime": ("12:30", "18:30", "21:30"),
+    "ma_mena_late": ("13:00", "19:30", "22:30"),
+}
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm"}
@@ -271,6 +304,7 @@ class RenderConfig:
     latin_font_file: Path | None = None
     brand_text: str = "shortQuran"
     title_text: str | None = None
+    description_text: str | None = None
     fps: int = DEFAULT_FPS
     word_segments: list[WordSegment] | None = None
     timed_segments: list[TimedSegment] | None = None
@@ -392,6 +426,7 @@ class RenderConfig:
             latin_font_file=latin_font_file,
             brand_text=str(payload.get("brand_text", "shortQuran")).strip() or "shortQuran",
             title_text=str(payload["title_text"]).strip() if payload.get("title_text") else None,
+            description_text=str(payload["description_text"]).strip() if payload.get("description_text") else None,
             fps=fps,
             word_segments=word_segments,
             show_meta=show_meta,
@@ -407,6 +442,10 @@ class YouTubeUploadOptions:
     token_file: Path
     privacy_status: str = DEFAULT_YOUTUBE_PRIVACY_STATUS
     schedule_at: datetime | None = None
+    auto_schedule_enabled: bool = False
+    schedule_timezone: str = DEFAULT_YOUTUBE_AUTO_SCHEDULE_TIMEZONE
+    schedule_slots: tuple[str, ...] = ()
+    schedule_reference_at: datetime | None = None
     category_id: str = DEFAULT_YOUTUBE_CATEGORY_ID
     tags: tuple[str, ...] = ()
     default_language: str = DEFAULT_YOUTUBE_DEFAULT_LANGUAGE
@@ -491,6 +530,27 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--youtube-schedule-at",
         help="Optional ISO datetime for scheduled publish, for example 2026-04-10T18:00:00+01:00.",
+    )
+    parser.add_argument(
+        "--youtube-auto-schedule",
+        action="store_true",
+        help="Automatically schedule YouTube uploads into the next available MA/MENA time slots.",
+    )
+    parser.add_argument(
+        "--youtube-schedule-preset",
+        choices=tuple(YOUTUBE_AUTO_SCHEDULE_PRESETS),
+        default=DEFAULT_YOUTUBE_AUTO_SCHEDULE_PRESET,
+        help="Preset slot pack used when --youtube-auto-schedule is enabled.",
+    )
+    parser.add_argument(
+        "--youtube-schedule-timezone",
+        default=DEFAULT_YOUTUBE_AUTO_SCHEDULE_TIMEZONE,
+        help="IANA timezone used for automatic YouTube scheduling.",
+    )
+    parser.add_argument(
+        "--youtube-schedule-slots",
+        default="",
+        help="Optional comma-separated publish slots like 12:30,18:30,21:30. Overrides the preset for automatic scheduling.",
     )
     parser.add_argument(
         "--youtube-category-id",
@@ -688,6 +748,40 @@ def to_rfc3339(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def resolve_schedule_timezone(timezone_name: str) -> ZoneInfo | tzinfo:
+    try:
+        return ZoneInfo(timezone_name)
+    except ZoneInfoNotFoundError:
+        return datetime.now().astimezone().tzinfo or timezone.utc
+
+
+def parse_schedule_slot(value: str) -> tuple[int, int]:
+    cleaned = value.strip()
+    if not cleaned:
+        raise ValueError("Schedule slot values cannot be empty.")
+
+    match = re.fullmatch(r"(\d{1,2}):(\d{2})", cleaned)
+    if not match:
+        raise ValueError(f"Invalid schedule slot '{value}'. Use HH:MM format.")
+
+    hour = int(match.group(1))
+    minute = int(match.group(2))
+    if hour not in range(24) or minute not in range(60):
+        raise ValueError(f"Invalid schedule slot '{value}'. Use HH:MM format.")
+    return hour, minute
+
+
+def resolve_youtube_schedule_slots(
+    raw_slots: object,
+    *,
+    preset_name: str,
+) -> tuple[str, ...]:
+    custom_slots = parse_csv_text_list(raw_slots)
+    if custom_slots:
+        return custom_slots
+    return YOUTUBE_AUTO_SCHEDULE_PRESETS[preset_name]
+
+
 def parse_csv_text_list(value: object) -> tuple[str, ...]:
     normalized = normalize_optional_text(value)
     if normalized is None:
@@ -803,6 +897,68 @@ def get_recent_history_values(
     return recent_values
 
 
+def choose_balanced_history_value(
+    candidates: tuple[str, ...] | list[str],
+    history_entries: list[dict[str, object]],
+    history_key: str,
+    *,
+    recent_limit: int,
+) -> str:
+    candidate_list = [candidate for candidate in candidates if candidate]
+    if not candidate_list:
+        raise ValueError(f"No candidates available for history key '{history_key}'.")
+
+    recent_values = set(get_recent_history_values(history_entries, history_key, limit=recent_limit))
+    counts = {candidate: 0 for candidate in candidate_list}
+    for entry in history_entries:
+        value = normalize_optional_text(entry.get(history_key))
+        if value in counts:
+            counts[value] += 1
+
+    available_candidates = [candidate for candidate in candidate_list if candidate not in recent_values]
+    preferred_candidates = available_candidates or candidate_list
+    minimum_count = min(counts[candidate] for candidate in preferred_candidates)
+    balanced_candidates = [
+        candidate
+        for candidate in preferred_candidates
+        if counts[candidate] == minimum_count
+    ]
+    return random.choice(balanced_candidates)
+
+
+def build_translation_excerpt(text: str | None, *, limit: int = AUTO_DESCRIPTION_EXCERPT_CHARS) -> str:
+    cleaned = " ".join((text or "").split())
+    if not cleaned:
+        return "Listen, reflect, and revisit these verses."
+    if len(cleaned) <= limit:
+        return cleaned
+
+    truncated = cleaned[:limit].rsplit(" ", maxsplit=1)[0].rstrip(" ,.;:-")
+    return f"{truncated}..."
+
+
+def build_auto_description(
+    config: RenderConfig,
+    *,
+    description_template_key: str,
+    description_hook_key: str,
+    cta_key: str,
+) -> str:
+    hook_line = AUTO_DESCRIPTION_HOOKS[description_hook_key]
+    cta_text = AUTO_CTA_LINES[cta_key]
+    translation_excerpt = build_translation_excerpt(config.translation)
+    description_body = AUTO_DESCRIPTION_TEMPLATES[description_template_key].format(
+        hook_line=hook_line,
+        chapter_name=config.surah_name,
+        verse_reference=config.verse_reference,
+        reciter_name=config.reciter_name or "Quran recitation",
+        translation_excerpt=translation_excerpt,
+        cta=cta_text,
+    ).strip()
+    hashtags_line = " ".join(build_youtube_hashtags(config))
+    return f"{description_body}\n\n{hashtags_line}".strip()
+
+
 def build_auto_combo_key(chapter_number: int, verse_start: int, verse_end: int, reciter_name: str) -> str:
     safe_reciter = sanitize_filename_part(reciter_name)
     return f"{chapter_number}:{verse_start}-{verse_end}:{safe_reciter}"
@@ -887,13 +1043,12 @@ def choose_auto_target_seconds(target_seconds: float, history_entries: list[dict
 
 
 def choose_auto_style_preset(history_entries: list[dict[str, object]]) -> str:
-    recent_styles = get_recent_history_values(
+    return choose_balanced_history_value(
+        list(AUTO_STYLE_PRESETS),
         history_entries,
         "style_preset",
-        limit=AUTO_RECENT_STYLE_WINDOW,
+        recent_limit=AUTO_RECENT_STYLE_WINDOW,
     )
-    available_styles = [preset for preset in AUTO_STYLE_PRESETS if preset not in recent_styles]
-    return random.choice(available_styles or list(AUTO_STYLE_PRESETS))
 
 
 def build_auto_title(
@@ -904,28 +1059,59 @@ def build_auto_title(
     verse_end: int,
     reciter_name: str,
     history_entries: list[dict[str, object]],
-) -> tuple[str, str]:
-    recent_templates = get_recent_history_values(
+) -> tuple[dict[str, str], str]:
+    title_template_key = choose_balanced_history_value(
+        list(AUTO_TITLE_TEMPLATES),
         history_entries,
         "title_template_key",
-        limit=AUTO_RECENT_TITLE_WINDOW,
+        recent_limit=AUTO_RECENT_TITLE_WINDOW,
     )
-    available_templates = [
-        template_key
-        for template_key in AUTO_TITLE_TEMPLATES
-        if template_key not in recent_templates
-    ]
-    template_key = random.choice(available_templates or list(AUTO_TITLE_TEMPLATES))
+    title_hook_key = choose_balanced_history_value(
+        list(AUTO_TITLE_HOOKS),
+        history_entries,
+        "title_hook_key",
+        recent_limit=AUTO_RECENT_METADATA_WINDOW,
+    )
+    description_template_key = choose_balanced_history_value(
+        list(AUTO_DESCRIPTION_TEMPLATES),
+        history_entries,
+        "description_template_key",
+        recent_limit=AUTO_RECENT_TITLE_WINDOW,
+    )
+    description_hook_key = choose_balanced_history_value(
+        list(AUTO_DESCRIPTION_HOOKS),
+        history_entries,
+        "description_hook_key",
+        recent_limit=AUTO_RECENT_METADATA_WINDOW,
+    )
+    cta_key = choose_balanced_history_value(
+        list(AUTO_CTA_LINES),
+        history_entries,
+        "cta_key",
+        recent_limit=AUTO_RECENT_METADATA_WINDOW,
+    )
     verse_range_label = str(verse_start) if verse_start == verse_end else f"{verse_start}-{verse_end}"
-    title_text = AUTO_TITLE_TEMPLATES[template_key].format(
+    hook_text = AUTO_TITLE_HOOKS[title_hook_key]
+    title_text = AUTO_TITLE_TEMPLATES[title_template_key].format(
         chapter_name=chapter_name,
         verse_reference=verse_reference,
         verse_start=verse_start,
         verse_end=verse_end,
         verse_range_label=verse_range_label,
         reciter_name=reciter_name,
+        hook=hook_text,
     )
-    return template_key, title_text
+    metadata_keys = {
+        "title_template_key": title_template_key,
+        "title_hook_key": title_hook_key,
+        "title_hook_text": hook_text,
+        "description_template_key": description_template_key,
+        "description_hook_key": description_hook_key,
+        "description_hook_text": AUTO_DESCRIPTION_HOOKS[description_hook_key],
+        "cta_key": cta_key,
+        "cta_text": AUTO_CTA_LINES[cta_key],
+    }
+    return metadata_keys, title_text
 
 
 def is_cinematic_style(style_preset: str) -> bool:
@@ -952,8 +1138,15 @@ def build_youtube_upload_options(args: argparse.Namespace, base_dir: Path) -> Yo
         or DEFAULT_YOUTUBE_TOKEN_FILE
     )
     schedule_at = parse_optional_datetime(args.youtube_schedule_at, field_name="youtube-schedule-at")
+    auto_schedule_enabled = bool(args.youtube_auto_schedule) and schedule_at is None
+    schedule_slots = resolve_youtube_schedule_slots(
+        args.youtube_schedule_slots,
+        preset_name=args.youtube_schedule_preset,
+    )
+    for slot in schedule_slots:
+        parse_schedule_slot(slot)
     privacy_status = args.youtube_privacy_status
-    if schedule_at is not None:
+    if schedule_at is not None or auto_schedule_enabled:
         privacy_status = "private"
 
     return YouTubeUploadOptions(
@@ -961,10 +1154,57 @@ def build_youtube_upload_options(args: argparse.Namespace, base_dir: Path) -> Yo
         token_file=resolve_runtime_path(base_dir, token_file_raw),
         privacy_status=privacy_status,
         schedule_at=schedule_at,
+        auto_schedule_enabled=auto_schedule_enabled,
+        schedule_timezone=require_non_empty_text(args.youtube_schedule_timezone, "youtube-schedule-timezone"),
+        schedule_slots=schedule_slots,
+        schedule_reference_at=datetime.now(timezone.utc),
         category_id=require_non_empty_text(args.youtube_category_id, "youtube-category-id"),
         tags=parse_csv_text_list(args.youtube_tags),
         default_language=require_non_empty_text(args.youtube_default_language, "youtube-default-language"),
         made_for_kids=bool(args.youtube_made_for_kids),
+    )
+
+
+def resolve_auto_schedule_datetime(options: YouTubeUploadOptions, upload_index: int) -> datetime | None:
+    if not options.auto_schedule_enabled:
+        return options.schedule_at
+
+    schedule_timezone = resolve_schedule_timezone(options.schedule_timezone)
+    reference_time = (options.schedule_reference_at or datetime.now(timezone.utc)).astimezone(schedule_timezone)
+    reference_time += timedelta(minutes=DEFAULT_YOUTUBE_AUTO_SCHEDULE_BUFFER_MINUTES)
+    slot_values = [parse_schedule_slot(slot) for slot in options.schedule_slots]
+    if not slot_values:
+        return None
+
+    scheduled_slots: list[datetime] = []
+    candidate_date = reference_time.date()
+    while len(scheduled_slots) < max(1, upload_index):
+        for hour, minute in slot_values:
+            candidate = datetime.combine(candidate_date, datetime.min.time(), tzinfo=schedule_timezone).replace(
+                hour=hour,
+                minute=minute,
+            )
+            if candidate < reference_time:
+                continue
+            scheduled_slots.append(candidate)
+            if len(scheduled_slots) >= upload_index:
+                break
+        candidate_date += timedelta(days=1)
+
+    return scheduled_slots[upload_index - 1]
+
+
+def resolve_youtube_upload_options_for_index(
+    options: YouTubeUploadOptions,
+    *,
+    upload_index: int,
+) -> YouTubeUploadOptions:
+    scheduled_at = resolve_auto_schedule_datetime(options, upload_index)
+    privacy_status = "private" if scheduled_at is not None else options.privacy_status
+    return replace(
+        options,
+        schedule_at=scheduled_at,
+        privacy_status=privacy_status,
     )
 
 
@@ -1885,6 +2125,10 @@ def build_youtube_tags(config: RenderConfig, extra_tags: tuple[str, ...]) -> lis
 
 
 def build_youtube_description(config: RenderConfig) -> str:
+    custom_description = normalize_optional_text(config.description_text)
+    if custom_description:
+        return custom_description
+
     hashtags_line = " ".join(build_youtube_hashtags(config))
     lines = [
         build_youtube_title(config).replace(" #Shorts", ""),
@@ -1945,6 +2189,7 @@ def upload_video_to_youtube(
         "video_id": video_id,
         "watch_url": f"https://www.youtube.com/watch?v={video_id}",
         "privacy_status": status["privacyStatus"],
+        "publish_at": status.get("publishAt", ""),
     }
 
 
@@ -3663,7 +3908,7 @@ def finalize_auto_render_config(
         background_path = download_asset(DEFAULT_BACKGROUND_URL, cache_dir / "background", "background")
     font_file = download_asset(DEFAULT_ARABIC_FONT_URL, cache_dir / "font", "font")
     style_preset = choose_auto_style_preset(history_entries)
-    title_template_key, title_text = build_auto_title(
+    metadata_keys, title_text = build_auto_title(
         chapter_name=chapter_name,
         verse_reference=verse_reference,
         verse_start=verse_start,
@@ -3692,7 +3937,6 @@ def finalize_auto_render_config(
         "attribution_lines": list(reciter.attribution_lines),
         "background_path": str(background_path.resolve()) if background_path is not None else "",
         "style_preset": style_preset,
-        "title_template_key": title_template_key,
         "title_text": title_text,
         "target_seconds": selected_target_seconds,
         "planned_duration_seconds": round(
@@ -3703,8 +3947,17 @@ def finalize_auto_render_config(
         ),
         "output_path": str(output_path),
     }
+    history_entry.update(metadata_keys)
+    history_entry["metadata_variant_key"] = (
+        f"{metadata_keys['title_template_key']}|{metadata_keys['title_hook_key']}|"
+        f"{metadata_keys['description_template_key']}|{metadata_keys['description_hook_key']}|"
+        f"{metadata_keys['cta_key']}"
+    )
+    history_entry["experiment_bucket"] = (
+        f"{style_preset}|{metadata_keys['title_template_key']}|{metadata_keys['description_template_key']}"
+    )
 
-    return RenderConfig(
+    config = RenderConfig(
         audio_path=audio_output,
         output_path=output_path,
         verse_text=" ".join(verse.arabic for verse in selected_verses),
@@ -3716,6 +3969,7 @@ def finalize_auto_render_config(
         font_file=font_file,
         brand_text="shortQuran",
         title_text=title_text,
+        description_text=None,
         fps=DEFAULT_FPS,
         timed_segments=timed_segments or None,
         prefer_static_text_overlay=use_static_source_audio,
@@ -3725,6 +3979,14 @@ def finalize_auto_render_config(
         auto_history_entry=history_entry,
         attribution_lines=reciter.attribution_lines,
     )
+    config.description_text = build_auto_description(
+        config,
+        description_template_key=metadata_keys["description_template_key"],
+        description_hook_key=metadata_keys["description_hook_key"],
+        cta_key=metadata_keys["cta_key"],
+    )
+    history_entry["description_text"] = config.description_text
+    return config
 
 
 def build_auto_render_config(
@@ -4941,11 +5203,20 @@ def main() -> int:
                 facebook_upload_result = None
                 tiktok_upload_result = None
                 if youtube_options is not None and args.youtube_upload:
+                    resolved_youtube_options = resolve_youtube_upload_options_for_index(
+                        youtube_options,
+                        upload_index=index,
+                    )
                     print(f"Uploading to YouTube: {config.output_path.name}")
+                    if resolved_youtube_options.schedule_at is not None:
+                        print(
+                            "YouTube publish slot: "
+                            f"{resolved_youtube_options.schedule_at.astimezone(resolve_schedule_timezone(resolved_youtube_options.schedule_timezone)).isoformat()}"
+                        )
                     youtube_upload_result = upload_video_to_youtube(
                         video_path=config.output_path,
                         config=config,
-                        options=youtube_options,
+                        options=resolved_youtube_options,
                         interactive_auth=False,
                     )
                     print(
@@ -4999,6 +5270,13 @@ def main() -> int:
                         config.auto_history_entry["youtube_video_id"] = youtube_upload_result["video_id"]
                         config.auto_history_entry["youtube_watch_url"] = youtube_upload_result["watch_url"]
                         config.auto_history_entry["youtube_privacy_status"] = youtube_upload_result["privacy_status"]
+                        if youtube_upload_result.get("publish_at"):
+                            config.auto_history_entry["youtube_publish_at"] = youtube_upload_result["publish_at"]
+                            config.auto_history_entry["youtube_schedule_timezone"] = (
+                                resolved_youtube_options.schedule_timezone
+                                if youtube_options is not None
+                                else DEFAULT_YOUTUBE_AUTO_SCHEDULE_TIMEZONE
+                            )
                         config.auto_history_entry["uploaded_at"] = datetime.now(timezone.utc).isoformat()
                     if facebook_upload_result is not None:
                         config.auto_history_entry["facebook_video_id"] = facebook_upload_result["video_id"]
