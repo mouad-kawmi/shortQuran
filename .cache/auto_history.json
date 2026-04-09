@@ -392,5 +392,28 @@
     "youtube_watch_url": "https://www.youtube.com/watch?v=ZO03tFmwhyw",
     "youtube_privacy_status": "public",
     "uploaded_at": "2026-04-09T00:03:47.941151+00:00"
+  },
+  {
+    "created_at": "2026-04-09T00:13:26.334149+00:00",
+    "combo_key": "43:4-12:sa-ud-ash-shuraym",
+    "chapter_number": 43,
+    "chapter_name": "Az-Zukhruf",
+    "verse_reference": "43:4-12",
+    "verse_start": 4,
+    "verse_end": 12,
+    "reciter_name": "Sa`ud ash-Shuraym",
+    "attribution_lines": [],
+    "background_path": "/home/runner/work/shortQuran/shortQuran/backgroundPhoto/WhatsApp Image 2026-04-08 at 18.53.33 (3).jpeg",
+    "style_preset": "cinematic_spacious",
+    "title_template_key": "reference",
+    "title_text": "Az-Zukhruf | 43:4-12",
+    "target_seconds": 60.0,
+    "planned_duration_seconds": 64.25,
+    "output_path": "/home/runner/work/shortQuran/shortQuran/outputs/auto-01-043-004-012-az-zukhruf-sa-ud-ash-shuraym.mp4",
+    "rendered_at": "2026-04-09T00:14:59.001670+00:00",
+    "youtube_video_id": "tP0-pknIJh4",
+    "youtube_watch_url": "https://www.youtube.com/watch?v=tP0-pknIJh4",
+    "youtube_privacy_status": "public",
+    "uploaded_at": "2026-04-09T00:14:59.001687+00:00"
   }
 ]
