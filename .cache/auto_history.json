@@ -461,5 +461,28 @@
     "youtube_watch_url": "https://www.youtube.com/watch?v=93BLRyPSi9U",
     "youtube_privacy_status": "public",
     "uploaded_at": "2026-04-09T00:59:24.047699+00:00"
+  },
+  {
+    "created_at": "2026-04-09T04:41:01.269538+00:00",
+    "combo_key": "38:7-8:abdulbaset-abdulsamad",
+    "chapter_number": 38,
+    "chapter_name": "Sad",
+    "verse_reference": "38:7-8",
+    "verse_start": 7,
+    "verse_end": 8,
+    "reciter_name": "AbdulBaset AbdulSamad",
+    "attribution_lines": [],
+    "background_path": "/home/runner/work/shortQuran/shortQuran/backgroundPhoto/WhatsApp Image 2026-04-06 at 00.35.47 (1).jpeg",
+    "style_preset": "cinematic_spacious",
+    "title_template_key": "focus",
+    "title_text": "Quran Short | Sad",
+    "target_seconds": 60.0,
+    "planned_duration_seconds": 51.58,
+    "output_path": "/home/runner/work/shortQuran/shortQuran/outputs/auto-01-038-007-008-sad-abdulbaset-abdulsa.mp4",
+    "rendered_at": "2026-04-09T04:42:16.917676+00:00",
+    "youtube_video_id": "AInb7n0H-_o",
+    "youtube_watch_url": "https://www.youtube.com/watch?v=AInb7n0H-_o",
+    "youtube_privacy_status": "public",
+    "uploaded_at": "2026-04-09T04:42:16.917691+00:00"
   }
 ]
