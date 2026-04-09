@@ -3333,7 +3333,8 @@ def collect_auto_verses(
         if word_count > 16:
             if selected_verses and total_duration >= minimum_duration:
                 break
-            raise RuntimeError(f"Verse {verse_key} is too long for cinematic automatic mode.")
+            current_ayah += 1
+            continue
 
         translation = extract_translation_text(verse_payload) or translation_map.get(verse_key, "")
         try:
