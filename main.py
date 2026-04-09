@@ -25,6 +25,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlencode, unquote, urlparse
 from urllib.request import Request, urlopen
 
+import arabic_reshaper
+from bidi.algorithm import get_display
 
 
 VIDEO_WIDTH = 1080
@@ -645,8 +647,10 @@ def clean_quranic_text(text: str) -> str:
         return ""
     # Remove special Quranic tajweed marks only
     text = re.sub(r"[\u06d6-\u06ed]", "", text)
-    
-    return text
+    configuration = {"delete_harakat": False}
+    reshaper = arabic_reshaper.ArabicReshaper(configuration=configuration)
+    reshaped_text = reshaper.reshape(text)
+    return get_display(reshaped_text, base_dir="R")
 
 
 
@@ -4103,7 +4107,7 @@ def build_drawtext_filter(
         f"fontcolor={font_color}:"
         f"fontsize={font_size}:"
         f"line_spacing={line_spacing}:"
-        f"text_shaping=1:"
+        f"text_shaping=0:"
 
         f"{box_part}"
         f"borderw={border_width}:"
