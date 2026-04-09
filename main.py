@@ -101,8 +101,22 @@ CONTENT_TYPE_EXTENSIONS = {
     "application/octet-stream": "",
 }
 VERSES_AUDIO_BASE_URL = "https://verses.quran.foundation/"
-DEFAULT_ARABIC_FONT_URL = "https://raw.githubusercontent.com/google/fonts/main/ofl/notosansarabic/NotoSansArabic-Regular.ttf"
-DEFAULT_LATIN_FONT_URL = "https://github.com/googlefonts/noto-fonts/raw/master/unhinted/ttf/NotoSans/NotoSans-Regular.ttf"
+DEFAULT_ARABIC_FONT_URL = "https://raw.githubusercontent.com/googlefonts/noto-fonts/main/hinted/ttf/NotoSansArabic/NotoSansArabic-Regular.ttf"
+DEFAULT_LATIN_FONT_URL = "https://raw.githubusercontent.com/googlefonts/noto-fonts/main/hinted/ttf/NotoSans/NotoSans-Regular.ttf"
+DEFAULT_FONT_URL_FALLBACKS = {
+    "https://raw.githubusercontent.com/google/fonts/main/ofl/notosansarabic/NotoSansArabic-Regular.ttf": (
+        DEFAULT_ARABIC_FONT_URL,
+        "https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSansArabic/NotoSansArabic-Regular.ttf",
+    ),
+    DEFAULT_ARABIC_FONT_URL: (
+        DEFAULT_ARABIC_FONT_URL,
+        "https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSansArabic/NotoSansArabic-Regular.ttf",
+    ),
+    DEFAULT_LATIN_FONT_URL: (
+        DEFAULT_LATIN_FONT_URL,
+        "https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSans/NotoSans-Regular.ttf",
+    ),
+}
 PEXELS_API_BASE_URL = "https://api.pexels.com/videos"
 DEFAULT_PEXELS_API_KEY_FILE = ".secrets/pexels-api-key.txt"
 PEXELS_NATURE_QUERIES = ("nature", "river mountains", "forest", "ocean waves", "rain forest", "sky clouds", "sunrise", "waterfall", "desert", "green nature")
@@ -2567,33 +2581,43 @@ def get_extension_from_content_type(content_type: str, asset_name: str) -> str:
 
 
 def download_asset(url: str, cache_dir: Path, asset_name: str) -> Path:
-    asset_hash = hashlib.sha1(url.encode("utf-8")).hexdigest()[:12]
-    existing_matches = sorted(cache_dir.glob(f"{asset_name}-*-{asset_hash}.*"))
-    if existing_matches:
-        return existing_matches[0]
+    candidate_urls = (url,)
+    if asset_name == "font":
+        candidate_urls = DEFAULT_FONT_URL_FALLBACKS.get(url, (url,))
 
-    parsed_url = urlparse(url)
-    source_name = Path(unquote(parsed_url.path)).stem or asset_name
-    safe_name = sanitize_filename_part(source_name)
-
-    request = Request(url, headers={"User-Agent": "shortQuran/1.0"})
     cache_dir.mkdir(parents=True, exist_ok=True)
 
-    try:
-        print(f"Downloading {asset_name} from {url}")
-        with urlopen(request, timeout=60) as response:
-            content_type = response.headers.get_content_type()
-            extension = get_extension_from_url(url) or get_extension_from_content_type(content_type, asset_name)
-            target_path = cache_dir / f"{asset_name}-{safe_name}-{asset_hash}{extension}"
-            temp_path = target_path.with_suffix(f"{target_path.suffix}.part")
+    for candidate_url in candidate_urls:
+        asset_hash = hashlib.sha1(candidate_url.encode("utf-8")).hexdigest()[:12]
+        existing_matches = sorted(cache_dir.glob(f"{asset_name}-*-{asset_hash}.*"))
+        if existing_matches:
+            return existing_matches[0]
 
-            with temp_path.open("wb") as temp_file:
-                shutil.copyfileobj(response, temp_file)
+    errors: list[str] = []
+    for candidate_url in candidate_urls:
+        parsed_url = urlparse(candidate_url)
+        source_name = Path(unquote(parsed_url.path)).stem or asset_name
+        safe_name = sanitize_filename_part(source_name)
+        request = Request(candidate_url, headers={"User-Agent": "shortQuran/1.0"})
+        asset_hash = hashlib.sha1(candidate_url.encode("utf-8")).hexdigest()[:12]
 
-            temp_path.replace(target_path)
-            return target_path
-    except (OSError, URLError) as error:
-        raise RuntimeError(f"Failed to download {asset_name} from {url}: {error}") from error
+        try:
+            print(f"Downloading {asset_name} from {candidate_url}")
+            with urlopen(request, timeout=60) as response:
+                content_type = response.headers.get_content_type()
+                extension = get_extension_from_url(candidate_url) or get_extension_from_content_type(content_type, asset_name)
+                target_path = cache_dir / f"{asset_name}-{safe_name}-{asset_hash}{extension}"
+                temp_path = target_path.with_suffix(f"{target_path.suffix}.part")
+
+                with temp_path.open("wb") as temp_file:
+                    shutil.copyfileobj(response, temp_file)
+
+                temp_path.replace(target_path)
+                return target_path
+        except (OSError, URLError) as error:
+            errors.append(f"{candidate_url}: {error}")
+
+    raise RuntimeError(f"Failed to download {asset_name}. Tried: {' | '.join(errors)}")
 
 
 def build_quran_api_url(path: str, query: dict[str, object] | None = None) -> str:
@@ -3002,7 +3026,6 @@ def finalize_showcase_render_config(
         background_path = download_asset(DEFAULT_BACKGROUND_URL, cache_dir / "background", "background")
 
     font_file = download_asset(DEFAULT_ARABIC_FONT_URL, cache_dir / "font", "font")
-    latin_font_file = download_asset(DEFAULT_LATIN_FONT_URL, cache_dir / "font", "font")
     latin_font_file = download_asset(DEFAULT_LATIN_FONT_URL, cache_dir / "font", "font")
 
     title_text = f"{arabic_surah_name} | {chapter_name} | {reciter.reciter_name}"
