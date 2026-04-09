@@ -415,5 +415,28 @@
     "youtube_watch_url": "https://www.youtube.com/watch?v=tP0-pknIJh4",
     "youtube_privacy_status": "public",
     "uploaded_at": "2026-04-09T00:14:59.001687+00:00"
+  },
+  {
+    "created_at": "2026-04-09T00:47:00.804478+00:00",
+    "combo_key": "55:4-14:abu-bakr-al-shatri",
+    "chapter_number": 55,
+    "chapter_name": "Ar-Rahman",
+    "verse_reference": "55:4-14",
+    "verse_start": 4,
+    "verse_end": 14,
+    "reciter_name": "Abu Bakr al-Shatri",
+    "attribution_lines": [],
+    "background_path": "/home/runner/work/shortQuran/shortQuran/backgroundPhoto/WhatsApp Image 2026-04-08 at 18.53.33 (1).jpeg",
+    "style_preset": "cinematic_compact",
+    "title_template_key": "ayah",
+    "title_text": "Ar-Rahman | Ayat 4-14",
+    "target_seconds": 60.0,
+    "planned_duration_seconds": 55.7,
+    "output_path": "/home/runner/work/shortQuran/shortQuran/outputs/auto-01-055-004-014-ar-rahman-abu-bakr-al-shatri.mp4",
+    "rendered_at": "2026-04-09T00:48:19.600551+00:00",
+    "youtube_video_id": "cDuJkMS4PO0",
+    "youtube_watch_url": "https://www.youtube.com/watch?v=cDuJkMS4PO0",
+    "youtube_privacy_status": "public",
+    "uploaded_at": "2026-04-09T00:48:19.600567+00:00"
   }
 ]
