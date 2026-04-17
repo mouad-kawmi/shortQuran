@@ -134,7 +134,7 @@ CONTENT_TYPE_EXTENSIONS = {
     "application/octet-stream": "",
 }
 VERSES_AUDIO_BASE_URL = "https://verses.quran.foundation/"
-DEFAULT_ARABIC_FONT_URL = "https://github.com/google/fonts/raw/main/ofl/amiri/Amiri-Regular.ttf"
+DEFAULT_ARABIC_FONT_URL = "https://raw.githubusercontent.com/googlefonts/noto-fonts/main/hinted/ttf/NotoSansArabic/NotoSansArabic-Regular.ttf"
 DEFAULT_LATIN_FONT_URL = "https://raw.githubusercontent.com/googlefonts/noto-fonts/main/hinted/ttf/NotoSans/NotoSans-Regular.ttf"
 DEFAULT_FONT_URL_FALLBACKS = {
     "https://raw.githubusercontent.com/google/fonts/main/ofl/notosansarabic/NotoSansArabic-Regular.ttf": (
@@ -387,7 +387,7 @@ class RenderConfig:
             cache_dir=cache_dir,
             local_value=payload.get("font_file"),
             url_value=font_url_value,
-            asset_name="amiri_font",
+            asset_name="font",
             required=False,
         )
         latin_font_file = resolve_asset_path(
@@ -4480,7 +4480,7 @@ def build_drawtext_filter(
         f"fontsize={font_size}:"
         f"line_spacing={line_spacing}:"
         f"text_shaping=0:"
-        f"fix_bounds=0:"
+        f"fix_bounds=1:"
         f"{box_part}"
         f"borderw={border_width}:"
         f"bordercolor={border_color}:"
