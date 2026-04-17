@@ -134,7 +134,7 @@ CONTENT_TYPE_EXTENSIONS = {
     "application/octet-stream": "",
 }
 VERSES_AUDIO_BASE_URL = "https://verses.quran.foundation/"
-DEFAULT_ARABIC_FONT_URL = "https://raw.githubusercontent.com/googlefonts/noto-fonts/main/hinted/ttf/NotoSansArabic/NotoSansArabic-Regular.ttf"
+DEFAULT_ARABIC_FONT_URL = "https://github.com/google/fonts/raw/main/ofl/amiri/Amiri-Regular.ttf"
 DEFAULT_LATIN_FONT_URL = "https://raw.githubusercontent.com/googlefonts/noto-fonts/main/hinted/ttf/NotoSans/NotoSans-Regular.ttf"
 DEFAULT_FONT_URL_FALLBACKS = {
     "https://raw.githubusercontent.com/google/fonts/main/ofl/notosansarabic/NotoSansArabic-Regular.ttf": (
@@ -387,7 +387,7 @@ class RenderConfig:
             cache_dir=cache_dir,
             local_value=payload.get("font_file"),
             url_value=font_url_value,
-            asset_name="font",
+            asset_name="amiri_font",
             required=False,
         )
         latin_font_file = resolve_asset_path(
@@ -395,7 +395,7 @@ class RenderConfig:
             cache_dir=cache_dir,
             local_value=payload.get("latin_font_file"),
             url_value=latin_font_url_value,
-            asset_name="font",
+            asset_name="latin_font",
             required=False,
         )
 
@@ -720,11 +720,7 @@ def clean_quranic_text(text: str) -> str:
     if not text:
         return ""
     # Remove special Quranic tajweed marks only
-    text = re.sub(r"[\u06d6-\u06ed]", "", text)
-    configuration = {"delete_harakat": False}
-    reshaper = arabic_reshaper.ArabicReshaper(configuration=configuration)
-    reshaped_text = reshaper.reshape(text)
-    return get_display(reshaped_text, base_dir="R")
+    return re.sub(r"[\u06d6-\u06ed]", "", text)
 
 
 
@@ -4484,7 +4480,7 @@ def build_drawtext_filter(
         f"fontsize={font_size}:"
         f"line_spacing={line_spacing}:"
         f"text_shaping=0:"
-        f"fix_bounds=1:"
+        f"fix_bounds=0:"
         f"{box_part}"
         f"borderw={border_width}:"
         f"bordercolor={border_color}:"
@@ -4621,9 +4617,53 @@ def create_text_assets(config: RenderConfig, temp_dir: Path) -> dict[str, list[P
         translation_text = "\n".join(filter(None, [english_surah, english_reciter]))
 
         brand_text = wrap_text(config.brand_text, width=24) if config.show_brand else ""
+def process_arabic_text(text: str) -> str:
+    if not text.strip():
+        return text
+    try:
+        import arabic_reshaper
+        from bidi.algorithm import get_display
+
+        configuration = {
+            "delete_harakat": False,
+            "support_marks": True,
+            "shift_harakat_position": False
+        }
+        reshaper = arabic_reshaper.ArabicReshaper(configuration=configuration)
+
+        lines = []
+        for line in text.splitlines():
+            reshaped = reshaper.reshape(line)
+            lines.append(get_display(reshaped))
+        return "\n".join(lines)
+    except ImportError:
+        return text
+
+def build_arabic_line_files(temp_dir: Path, prefix: str, text: str) -> list[Path]:
+    processed_text = process_arabic_text(text)
+    return build_line_files(temp_dir, prefix, processed_text)
+
+def create_text_assets(config: RenderConfig, temp_dir: Path) -> dict[str, list[Path]]:
+    is_cinematic = is_cinematic_style(config.style_preset)
+    is_showcase = config.style_preset == SHOWCASE_STYLE
+
+    if is_showcase:
+        # Showcase: show surah name (Arabic + English) + reciter name (Arabic + English), no verse
+        arabic_surah = config.arabic_surah_name or config.surah_name
+        english_surah = config.surah_name
+        arabic_reciter = config.arabic_reciter_name or ""
+        english_reciter = config.reciter_name or ""
+
+        # Verse slot = Arabic surah name (large, Arabic font)
+        verse_text = "\n".join(filter(None, [arabic_surah, arabic_reciter]))
+        # Translation slot = English surah + reciter info
+        reciter_line = " ".join(filter(None, [arabic_reciter, f"· {english_reciter}" if english_reciter else ""])).strip()
+        translation_text = "\n".join(filter(None, [english_surah, english_reciter]))
+
+        brand_text = wrap_text(config.brand_text, width=24) if config.show_brand else ""
         assets = {
             "meta": [],
-            "verse": build_line_files(temp_dir, "verse", verse_text),
+            "verse": build_arabic_line_files(temp_dir, "verse", verse_text),
             "brand": build_line_files(temp_dir, "brand", brand_text),
         }
         if translation_text:
@@ -4648,8 +4688,8 @@ def create_text_assets(config: RenderConfig, temp_dir: Path) -> dict[str, list[P
     brand_text = wrap_text(config.brand_text, width=24 if is_cinematic else 32) if config.show_brand else ""
 
     assets = {
-        "meta": build_line_files(temp_dir, "meta", meta_text),
-        "verse": build_line_files(temp_dir, "verse", verse_text),
+        "meta": build_arabic_line_files(temp_dir, "meta", meta_text),
+        "verse": build_arabic_line_files(temp_dir, "verse", verse_text),
         "brand": build_line_files(temp_dir, "brand", brand_text),
     }
 
@@ -4670,7 +4710,7 @@ def create_segment_assets(config: RenderConfig, temp_dir: Path) -> list[SegmentT
         translation_text = wrap_text(segment.translation, width=26 if is_cinematic else 28)
         segment_assets.append(
             SegmentTextAsset(
-                arabic_lines=build_line_files(temp_dir, f"segment_arabic_{index}", arabic_text),
+                arabic_lines=build_arabic_line_files(temp_dir, f"segment_arabic_{index}", arabic_text),
                 translation_lines=build_line_files(temp_dir, f"segment_translation_{index}", translation_text),
             )
         )
@@ -4689,7 +4729,7 @@ def create_timed_segment_assets(config: RenderConfig, temp_dir: Path) -> list[Ti
         translation_text = wrap_text(segment.translation, width=26 if is_cinematic else 28)
         timed_assets.append(
             TimedSegmentTextAsset(
-                arabic_lines=build_line_files(temp_dir, f"timed_segment_arabic_{index}", arabic_text),
+                arabic_lines=build_arabic_line_files(temp_dir, f"timed_segment_arabic_{index}", arabic_text),
                 translation_lines=build_line_files(temp_dir, f"timed_segment_translation_{index}", translation_text),
                 start_time=segment.start_time,
                 end_time=segment.end_time,
@@ -4812,7 +4852,7 @@ def build_filter_complex(
             font_color="0xf8fafccc" if is_cinematic else "0xffd166",
             box_color=None,
             alpha_expression=alpha_expression,
-            font_file=None if is_cinematic else config.font_file,
+            font_file=config.latin_font_file or (None if is_cinematic else config.font_file),
             line_spacing=meta_line_spacing,
             box_border=0,
             border_width=1,
@@ -5025,7 +5065,7 @@ def build_filter_complex(
                     font_color="0xf8fafc",
                     box_color=None if is_cinematic and config.prefer_static_text_overlay else "0x02061766" if is_cinematic else None,
                     alpha_expression=alpha_expression,
-                    font_file=None if is_cinematic else config.font_file,
+                    font_file=config.latin_font_file or (None if is_cinematic else config.font_file),
                     line_spacing=translation_line_spacing,
                     box_border=0 if is_cinematic and config.prefer_static_text_overlay else 18 if is_cinematic else 0,
                     border_width=0 if is_cinematic else 1,

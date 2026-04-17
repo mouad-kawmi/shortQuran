@@ -1,0 +1,11 @@
+{
+  "surah_number": 80,
+  "ayah_number": 16,
+  "verse_text": "كِرَامٍ بَرَرَةٍ",
+  "surah_name": "Abasa",
+  "reciter_key": "alafasy",
+  "background_path": "backgroundPhoto/WhatsApp Video 2026-04-08 at 19.09.33.mp4",
+  "output_path": "outputs/test_font_fix.mp4",
+  "style_preset": "cinematic",
+  "fps": 30
+}
