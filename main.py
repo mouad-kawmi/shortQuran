@@ -4308,7 +4308,7 @@ def wrap_arabic_text(text: str, words_per_line: int, *, max_line_units: int | No
     if current_words:
         lines.append(" ".join(current_words))
 
-    return "\n".join(reversed(lines))
+    return "\n".join(lines)
 
 
 def choose_arabic_words_per_line(text: str, *, is_cinematic: bool) -> int:
