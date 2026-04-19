@@ -4857,14 +4857,8 @@ def build_filter_complex(
         # Full screen darkening overlay
         box_filter = "[base]drawbox=x=0:y=0:w=iw:h=ih:color=black@0.45:t=fill[bg_dark]"
         
-        # Cinematic Progress Bar
-        # Base faint line
-        prog_bg = "[bg_dark]drawbox=x=(iw-800)/2:y=940:w=800:h=4:color=white@0.2:t=fill[p_bg]"
-        # Filling bright line
-        prog_fg = f"[p_bg]drawbox=x=(iw-800)/2:y=940:w='800*(t/{duration})':h=4:color=0x90e0ef@0.9:t=fill[base_waves]"
-        
-        filters.extend([box_filter, prog_bg, prog_fg])
-        previous_label = "base_waves"
+        filters.extend([box_filter])
+        previous_label = "bg_dark"
         
         ar_surah = text_assets.get("arabic_surah", [])
         if ar_surah:
