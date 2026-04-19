@@ -3901,6 +3901,7 @@ def finalize_auto_render_config(
     else:
         background_path = download_asset(DEFAULT_BACKGROUND_URL, cache_dir / "background", "background")
     font_file = download_asset(DEFAULT_ARABIC_FONT_URL, cache_dir / "font", "font")
+    latin_font_file = download_asset(DEFAULT_LATIN_FONT_URL, cache_dir / "latin_font", "latin_font")
     style_preset = choose_auto_style_preset(history_entries)
     metadata_keys, title_text = build_auto_title(
         chapter_name=chapter_name,
@@ -3961,6 +3962,7 @@ def finalize_auto_render_config(
         reciter_name=reciter.reciter_name,
         background_path=background_path,
         font_file=font_file,
+        latin_font_file=latin_font_file,
         brand_text="shortQuran",
         title_text=title_text,
         description_text=None,
@@ -4854,12 +4856,14 @@ def build_filter_complex(
     if is_minimalist:
         # Full screen darkening overlay
         box_filter = "[base]drawbox=x=0:y=0:w=iw:h=ih:color=black@0.45:t=fill[bg_dark]"
-        # Visualizer (Thick glow effect)
-        waves_bg = "[1:a:0]showwaves=s=800x200:mode=p2p:colors=0x90e0ef@0.3[wbg]"
-        waves_fg = "[1:a:0]showwaves=s=800x200:mode=cline:colors=0xffffff@0.8[wfg]"
-        waves_mix = "[wbg][wfg]overlay=0:0[waves]"
-        overlay_filter = "[bg_dark][waves]overlay=x=(W-w)/2:y=900[base_waves]"
-        filters.extend([box_filter, waves_bg, waves_fg, waves_mix, overlay_filter])
+        
+        # Cinematic Progress Bar
+        # Base faint line
+        prog_bg = "[bg_dark]drawbox=x=(iw-800)/2:y=940:w=800:h=4:color=white@0.2:t=fill[p_bg]"
+        # Filling bright line
+        prog_fg = f"[p_bg]drawbox=x=(iw-800)/2:y=940:w='800*(t/{duration})':h=4:color=0x90e0ef@0.9:t=fill[base_waves]"
+        
+        filters.extend([box_filter, prog_bg, prog_fg])
         previous_label = "base_waves"
         
         ar_surah = text_assets.get("arabic_surah", [])
