@@ -12,6 +12,7 @@
   "cache_dir": ".cache/downloads",
   "output_path": "outputs/surah-al-mulk-1.mp4",
   "surah_name": "Surah Al-Mulk",
+  "arabic_surah_name": "سُورَةُ المُلْك",
   "verse_reference": "",
   "title_text": "Surah Al-Mulk | Ayah 1",
   "reciter_name": "",
@@ -32,5 +33,6 @@
     }
   ],
   "brand_text": "shortQuran",
+  "style_preset": "minimalist_info",
   "fps": 30
 }

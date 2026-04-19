@@ -48,9 +48,7 @@ BISMILLAH_ARABIC = "بِسْمِ اللَّهِ الرَّحْمَٰنِ الر�
 BISMILLAH_TRANSLATION = "In the name of Allah, the Most Compassionate, the Most Merciful."
 AUTO_HISTORY_FILE = ".cache/auto_history.json"
 AUTO_STYLE_PRESETS = (
-    "cinematic",
-    "cinematic_compact",
-    "cinematic_spacious",
+    "minimalist_info",
 )
 AUTO_TITLE_HOOKS = {
     "calm": "Calm Quran Recitation",
@@ -164,7 +162,7 @@ DEFAULT_YOUTUBE_TOKEN_FILE = ".secrets/youtube-token.json"
 FACEBOOK_GRAPH_API_BASE_URL = "https://graph.facebook.com"
 DEFAULT_FACEBOOK_API_VERSION = "v24.0"
 DEFAULT_FACEBOOK_PAGE_CONFIG_FILE = ".secrets/facebook-page-config.json"
-DEFAULT_FACEBOOK_VIDEO_STATE = "PUBLISHED"
+DEFAULT_FACEBOOK_VIDEO_STATE = "DRAFT"
 FACEBOOK_VIDEO_STATE_CHOICES = (
     "PUBLISHED",
     "DRAFT",
@@ -4646,6 +4644,7 @@ def build_arabic_line_files(temp_dir: Path, prefix: str, text: str) -> list[Path
 def create_text_assets(config: RenderConfig, temp_dir: Path) -> dict[str, list[Path]]:
     is_cinematic = is_cinematic_style(config.style_preset)
     is_showcase = config.style_preset == SHOWCASE_STYLE
+    is_minimalist = config.style_preset == "minimalist_info"
 
     if is_showcase:
         # Showcase: show surah name (Arabic + English) + reciter name (Arabic + English), no verse
@@ -4668,6 +4667,23 @@ def create_text_assets(config: RenderConfig, temp_dir: Path) -> dict[str, list[P
         }
         if translation_text:
             assets["translation"] = build_line_files(temp_dir, "translation", translation_text)
+        return assets
+
+    if is_minimalist:
+        english_reciter = config.reciter_name or ""
+        
+        assets = {
+            "meta": [],
+            "surah": build_line_files(temp_dir, "surah", config.surah_name),
+            "ayah": build_line_files(temp_dir, "ayah", f"Ayat {config.verse_reference}"),
+            "brand": build_line_files(temp_dir, "brand", wrap_text(config.brand_text, width=24) if config.show_brand else ""),
+        }
+        
+        if config.arabic_surah_name:
+            assets["arabic_surah"] = build_arabic_line_files(temp_dir, "arabic_surah", config.arabic_surah_name)
+        if english_reciter:
+            assets["reciter"] = build_line_files(temp_dir, "reciter", f"Qari: {english_reciter}")
+            
         return assets
 
     title_value = config.title_text or f"{config.surah_name} | {config.verse_reference}"
@@ -4700,7 +4716,7 @@ def create_text_assets(config: RenderConfig, temp_dir: Path) -> dict[str, list[P
 
 
 def create_segment_assets(config: RenderConfig, temp_dir: Path) -> list[SegmentTextAsset]:
-    if not config.word_segments:
+    if not config.word_segments or config.style_preset == "minimalist_info":
         return []
 
     is_cinematic = is_cinematic_style(config.style_preset)
@@ -4719,7 +4735,7 @@ def create_segment_assets(config: RenderConfig, temp_dir: Path) -> list[SegmentT
 
 
 def create_timed_segment_assets(config: RenderConfig, temp_dir: Path) -> list[TimedSegmentTextAsset]:
-    if not config.timed_segments:
+    if not config.timed_segments or config.style_preset == "minimalist_info":
         return []
 
     is_cinematic = is_cinematic_style(config.style_preset)
@@ -4831,8 +4847,64 @@ def build_filter_complex(
                 "[base]"
             )
 
+    is_minimalist = config.style_preset == "minimalist_info"
     alpha_expression = build_alpha_expression(duration)
     filters = [base_filter]
+    
+    if is_minimalist:
+        # Full screen darkening overlay
+        box_filter = "[base]drawbox=x=0:y=0:w=iw:h=ih:color=black@0.45:t=fill[bg_dark]"
+        # Visualizer (Thick glow effect)
+        waves_bg = "[1:a:0]showwaves=s=800x200:mode=p2p:colors=0x90e0ef@0.3[wbg]"
+        waves_fg = "[1:a:0]showwaves=s=800x200:mode=cline:colors=0xffffff@0.8[wfg]"
+        waves_mix = "[wbg][wfg]overlay=0:0[waves]"
+        overlay_filter = "[bg_dark][waves]overlay=x=(W-w)/2:y=900[base_waves]"
+        filters.extend([box_filter, waves_bg, waves_fg, waves_mix, overlay_filter])
+        previous_label = "base_waves"
+        
+        ar_surah = text_assets.get("arabic_surah", [])
+        if ar_surah:
+            filters.extend(build_text_block_filters(
+                input_label=previous_label, output_prefix="ar_surah", text_paths=ar_surah,
+                top_y=500, font_size=150, font_color="0xffffff", box_color=None, alpha_expression=alpha_expression,
+                font_file=config.font_file, line_spacing=10, box_border=0, border_width=0, shadow_y=12, shadow_color="0x000000dd", shadow_x=0
+            ))
+            previous_label = f"ar_surah_{len(ar_surah)-1}"
+            
+        filters.extend(build_text_block_filters(
+            input_label=previous_label, output_prefix="en_surah", text_paths=text_assets["surah"],
+            top_y=680 if ar_surah else 600, font_size=75, font_color="0xf8fafc", box_color=None, alpha_expression=alpha_expression,
+            font_file=config.latin_font_file or config.font_file, line_spacing=10, box_border=0, border_width=0, shadow_y=8, shadow_color="0x000000cc", shadow_x=0
+        ))
+        previous_label = "en_surah_0"
+        
+        filters.extend(build_text_block_filters(
+            input_label=previous_label, output_prefix="ayah", text_paths=text_assets["ayah"],
+            top_y=790 if ar_surah else 710, font_size=45, font_color="0x90e0ef", box_color=None, alpha_expression=alpha_expression,
+            font_file=config.latin_font_file or config.font_file, line_spacing=10, box_border=0, border_width=0, shadow_y=6, shadow_color="0x000000aa", shadow_x=0
+        ))
+        previous_label = "ayah_0"
+        
+        reciter = text_assets.get("reciter", [])
+        if reciter:
+            filters.extend(build_text_block_filters(
+                input_label=previous_label, output_prefix="reciter", text_paths=reciter,
+                top_y=1140, font_size=45, font_color="0xe2e8f0", box_color=None, alpha_expression=alpha_expression,
+                font_file=config.latin_font_file or config.font_file, line_spacing=10, box_border=0, border_width=0, shadow_y=6, shadow_color="0x000000aa", shadow_x=0
+            ))
+            previous_label = "reciter_0"
+            
+        if text_assets["brand"]:
+            filters.extend(build_text_block_filters(
+                input_label=previous_label, output_prefix="brand", text_paths=text_assets["brand"],
+                top_y=1750, font_size=32, font_color="0x90e0ef", box_color=None, alpha_expression=alpha_expression,
+                font_file=config.latin_font_file or config.font_file, line_spacing=10, box_border=0, border_width=0, shadow_y=2, shadow_color="0x00000088", shadow_x=0
+            ))
+            previous_label = "brand_0"
+            
+        filters.append(f"[{previous_label}]copy[vout]")
+        return ";".join(filters)
+
     use_timed_segment_overlays = bool(timed_segment_assets) and not config.prefer_static_text_overlay
     use_segment_overlays = bool(segment_assets) and not config.prefer_static_text_overlay
 
@@ -4844,7 +4916,7 @@ def build_filter_complex(
     meta_line_spacing = 8 if is_cinematic else 12
     filters.extend(
         build_text_block_filters(
-            input_label="base",
+            input_label="base_waves" if is_minimalist else "base",
             output_prefix="meta_layer",
             text_paths=text_assets["meta"],
             top_y=cinematic_meta_top if is_cinematic else 140,
@@ -4862,7 +4934,7 @@ def build_filter_complex(
             shadow_color="0x000000aa",
         )
     )
-    previous_label = get_last_layer_label("meta_layer", text_assets["meta"], "base")
+    previous_label = get_last_layer_label("meta_layer", text_assets["meta"], "base_waves" if is_minimalist else "base")
 
     if use_timed_segment_overlays:
         for index, segment_asset in enumerate(timed_segment_assets):
