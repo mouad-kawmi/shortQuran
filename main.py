@@ -12,6 +12,7 @@ import random
 import re
 import secrets
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -25,9 +26,6 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlencode, unquote, urlparse
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-
-import arabic_reshaper
-from bidi.algorithm import get_display
 
 
 VIDEO_WIDTH = 1080
@@ -132,6 +130,11 @@ CONTENT_TYPE_EXTENSIONS = {
     "application/octet-stream": "",
 }
 VERSES_AUDIO_BASE_URL = "https://verses.quran.foundation/"
+PROJECT_DIR = Path(__file__).resolve().parent
+PROJECT_ARABIC_FONT_FILENAMES = (
+    "quran_font.ttf",
+    "alaem.ttf",
+)
 DEFAULT_ARABIC_FONT_URL = "https://raw.githubusercontent.com/googlefonts/noto-fonts/main/hinted/ttf/NotoSansArabic/NotoSansArabic-Regular.ttf"
 DEFAULT_LATIN_FONT_URL = "https://raw.githubusercontent.com/googlefonts/noto-fonts/main/hinted/ttf/NotoSans/NotoSans-Regular.ttf"
 DEFAULT_FONT_URL_FALLBACKS = {
@@ -356,7 +359,9 @@ class RenderConfig:
         font_url_value = normalize_optional_text(payload.get("font_url"))
         local_font_path = resolve_optional_local_path(config_dir, payload.get("font_file"))
         if font_url_value is None and local_font_path is None:
-            font_url_value = DEFAULT_ARABIC_FONT_URL
+            local_font_path = find_project_arabic_font(config_dir)
+            if local_font_path is None:
+                font_url_value = DEFAULT_ARABIC_FONT_URL
 
         latin_font_url_value = normalize_optional_text(payload.get("latin_font_url"))
         local_latin_font_path = resolve_optional_local_path(config_dir, payload.get("latin_font_file"))
@@ -380,7 +385,7 @@ class RenderConfig:
             asset_name="background",
             required=False,
         )
-        font_file = resolve_asset_path(
+        font_file = local_font_path or resolve_asset_path(
             config_dir=config_dir,
             cache_dir=cache_dir,
             local_value=payload.get("font_file"),
@@ -719,6 +724,31 @@ def clean_quranic_text(text: str) -> str:
         return ""
     # Remove special Quranic tajweed marks only
     return re.sub(r"[\u06d6-\u06ed]", "", text)
+
+
+def find_project_arabic_font(base_dir: Path | None = None) -> Path | None:
+    search_roots: list[Path] = []
+    if base_dir is not None:
+        search_roots.append(base_dir.resolve())
+    search_roots.append(PROJECT_DIR)
+
+    seen_roots: set[Path] = set()
+    for root in search_roots:
+        if root in seen_roots:
+            continue
+        seen_roots.add(root)
+        for font_name in PROJECT_ARABIC_FONT_FILENAMES:
+            candidate = root / font_name
+            if candidate.exists():
+                return candidate.resolve()
+    return None
+
+
+def resolve_default_arabic_font_file(base_dir: Path, cache_dir: Path) -> Path:
+    bundled_font = find_project_arabic_font(base_dir)
+    if bundled_font is not None:
+        return bundled_font
+    return download_asset(DEFAULT_ARABIC_FONT_URL, cache_dir / "font", "font")
 
 
 
@@ -2466,14 +2496,17 @@ def get_builtin_recitation_source(reciter_key: str) -> VerseRecitationSource:
 
 
 def resolve_drawtext_font_file(font_file: Path | None) -> Path | None:
-    if font_file:
-        return font_file
-
-    if sys.platform.startswith("win"):
+    target = font_file
+    if target is None:
+        target = find_project_arabic_font()
+    if not target and sys.platform.startswith("win"):
         for candidate in WINDOWS_ARABIC_FONT_FALLBACKS:
             if candidate.exists():
-                return candidate
+                target = candidate
+                break
 
+    if target:
+        return target.resolve()
     return None
 
 
@@ -3264,7 +3297,7 @@ def finalize_showcase_render_config(
     if background_path is None:
         background_path = download_asset(DEFAULT_BACKGROUND_URL, cache_dir / "background", "background")
 
-    font_file = download_asset(DEFAULT_ARABIC_FONT_URL, cache_dir / "font", "font")
+    font_file = resolve_default_arabic_font_file(base_dir, cache_dir)
     latin_font_file = download_asset(DEFAULT_LATIN_FONT_URL, cache_dir / "font", "font")
 
     title_text = f"{arabic_surah_name} | {chapter_name} | {reciter.reciter_name}"
@@ -3900,7 +3933,9 @@ def finalize_auto_render_config(
         print(f"Using local background from {background_path}")
     else:
         background_path = download_asset(DEFAULT_BACKGROUND_URL, cache_dir / "background", "background")
-    font_file = download_asset(DEFAULT_ARABIC_FONT_URL, cache_dir / "font", "font")
+    
+    font_file = resolve_default_arabic_font_file(base_dir, cache_dir)
+
     latin_font_file = download_asset(DEFAULT_LATIN_FONT_URL, cache_dir / "latin_font", "latin_font")
     style_preset = choose_auto_style_preset(history_entries)
     metadata_keys, title_text = build_auto_title(
@@ -4441,6 +4476,394 @@ def escape_filter_path(path: Path) -> str:
     return path.as_posix().replace(":", r"\:").replace("'", r"\'")
 
 
+def resolve_font_family_name(font_file: Path | None) -> str | None:
+    if font_file is None or not font_file.exists():
+        return None
+
+    fallback_names = {
+        "quran_font": "Noto Naskh Arabic",
+        "alaem": "ALAEM",
+        "amiri-bold": "Amiri",
+        "amiri-regular": "Amiri",
+        "notosansarabic-regular": "Noto Sans Arabic",
+    }
+
+    try:
+        with font_file.open("rb") as font_stream:
+            header = font_stream.read(12)
+            if len(header) < 12:
+                return fallback_names.get(font_file.stem.lower())
+
+            _, table_count, _, _, _ = struct.unpack(">IHHHH", header)
+            name_table_offset = None
+            name_table_length = None
+
+            for _ in range(table_count):
+                record = font_stream.read(16)
+                if len(record) < 16:
+                    break
+                table_tag, _, table_offset, table_length = struct.unpack(">4sIII", record)
+                if table_tag == b"name":
+                    name_table_offset = table_offset
+                    name_table_length = table_length
+                    break
+
+            if name_table_offset is None or name_table_length is None:
+                return fallback_names.get(font_file.stem.lower())
+
+            font_stream.seek(name_table_offset)
+            name_table = font_stream.read(name_table_length)
+            if len(name_table) < 6:
+                return fallback_names.get(font_file.stem.lower())
+
+            _, record_count, string_offset = struct.unpack(">HHH", name_table[:6])
+            best_match: tuple[tuple[int, int, int], str] | None = None
+
+            for index in range(record_count):
+                record_offset = 6 + (index * 12)
+                record_end = record_offset + 12
+                if record_end > len(name_table):
+                    break
+
+                platform_id, _, language_id, name_id, value_length, value_offset = struct.unpack(
+                    ">HHHHHH",
+                    name_table[record_offset:record_end],
+                )
+                if name_id not in {1, 16}:
+                    continue
+
+                value_start = string_offset + value_offset
+                value_end = value_start + value_length
+                if value_end > len(name_table):
+                    continue
+
+                raw_value = name_table[value_start:value_end]
+                if platform_id == 3:
+                    decoded_value = raw_value.decode("utf-16-be", errors="ignore")
+                elif platform_id == 1:
+                    decoded_value = raw_value.decode("mac_roman", errors="ignore")
+                else:
+                    continue
+
+                family_name = decoded_value.strip().strip("\x00")
+                if not family_name:
+                    continue
+
+                sort_key = (
+                    0 if name_id == 16 else 1,
+                    0 if platform_id == 3 else 1,
+                    0 if language_id in {0, 0x0409} else 1,
+                )
+                if best_match is None or sort_key < best_match[0]:
+                    best_match = (sort_key, family_name)
+
+            if best_match is not None:
+                return best_match[1]
+    except OSError:
+        return fallback_names.get(font_file.stem.lower())
+
+    return fallback_names.get(font_file.stem.lower())
+
+
+def format_ass_timestamp(seconds: float) -> str:
+    total_centiseconds = max(0, int(round(seconds * 100)))
+    hours, remainder = divmod(total_centiseconds, 360000)
+    minutes, remainder = divmod(remainder, 6000)
+    whole_seconds, centiseconds = divmod(remainder, 100)
+    return f"{hours}:{minutes:02d}:{whole_seconds:02d}.{centiseconds:02d}"
+
+
+def escape_ass_text(text: str) -> str:
+    return (
+        text.replace("\\", r"\\")
+        .replace("{", r"\{")
+        .replace("}", r"\}")
+        .replace("\n", r"\N")
+    )
+
+
+def read_text_lines(text_paths: list[Path]) -> list[str]:
+    lines: list[str] = []
+    for text_path in text_paths:
+        line = text_path.read_text(encoding="utf-8").strip()
+        if line:
+            lines.append(line)
+    return lines
+
+
+def build_ass_dialogue(
+    text_lines: list[str],
+    *,
+    start_time: float,
+    end_time: float,
+    font_size: int,
+    line_spacing: int,
+    top_y: float,
+) -> str:
+    line_height = font_size + line_spacing
+    block_height = (len(text_lines) * line_height) - line_spacing
+    center_y = int(round(top_y + (block_height / 2)))
+    ass_text = escape_ass_text("\n".join(text_lines))
+    override = (
+        f"{{\\an5\\q1\\pos({VIDEO_WIDTH // 2},{center_y})"
+        f"\\fs{font_size}\\bord3\\shad2}}"
+    )
+    return (
+        "Dialogue: 0,"
+        f"{format_ass_timestamp(start_time)},{format_ass_timestamp(end_time)},"
+        f"Arabic,,0,0,0,,{override}{ass_text}"
+    )
+
+
+def write_fontconfig_file(temp_dir: Path, font_dirs: list[Path]) -> Path:
+    unique_dirs: list[Path] = []
+    seen_dirs: set[Path] = set()
+
+    for font_dir in font_dirs:
+        resolved_dir = font_dir.resolve()
+        if resolved_dir in seen_dirs or not resolved_dir.exists():
+            continue
+        seen_dirs.add(resolved_dir)
+        unique_dirs.append(resolved_dir)
+
+    cache_dir = temp_dir / "fontconfig-cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    xml_lines = [
+        "<?xml version=\"1.0\"?>",
+        "<!DOCTYPE fontconfig SYSTEM \"fonts.dtd\">",
+        "<fontconfig>",
+    ]
+    for font_dir in unique_dirs:
+        xml_lines.append(f"  <dir>{html.escape(font_dir.as_posix())}</dir>")
+    xml_lines.append(f"  <cachedir>{html.escape(cache_dir.as_posix())}</cachedir>")
+    xml_lines.append("</fontconfig>")
+
+    fontconfig_path = temp_dir / "fonts.conf"
+    write_text_asset(fontconfig_path, "\n".join(xml_lines))
+    return fontconfig_path
+
+
+def create_arabic_ass_file(
+    config: RenderConfig,
+    duration: float,
+    temp_dir: Path,
+    text_assets: dict[str, list[Path]],
+    segment_assets: list[SegmentTextAsset],
+    timed_segment_assets: list[TimedSegmentTextAsset],
+) -> Path | None:
+    resolved_font_file = resolve_drawtext_font_file(config.font_file)
+    font_family = resolve_font_family_name(resolved_font_file)
+    if resolved_font_file is None or font_family is None:
+        return None
+
+    is_cinematic = is_cinematic_style(config.style_preset)
+    cinematic_variant = get_cinematic_variant(config.style_preset)
+    cinematic_arabic_offset = 160 if cinematic_variant == "compact" else 110 if cinematic_variant == "spacious" else 132
+    cinematic_translation_top = 1110 if cinematic_variant == "compact" else 1160 if cinematic_variant == "spacious" else 1125
+
+    use_timed_segment_overlays = bool(timed_segment_assets) and not config.prefer_static_text_overlay
+    use_segment_overlays = bool(segment_assets) and not config.prefer_static_text_overlay
+
+    dialogues: list[str] = []
+
+    if config.style_preset == "minimalist_info":
+        verse_lines = read_text_lines(text_assets.get("verse", []))
+        if verse_lines:
+            dialogues.append(
+                build_ass_dialogue(
+                    verse_lines,
+                    start_time=0.0,
+                    end_time=duration,
+                    font_size=100,
+                    line_spacing=28,
+                    top_y=940,
+                )
+            )
+    elif use_timed_segment_overlays:
+        for segment_asset in timed_segment_assets:
+            verse_lines = read_text_lines(segment_asset.arabic_lines)
+            if not verse_lines:
+                continue
+
+            arabic_font_size, arabic_line_spacing = resolve_arabic_text_metrics(
+                len(verse_lines),
+                is_cinematic=is_cinematic,
+                max_line_units=measure_arabic_line_units("\n".join(verse_lines)),
+            )
+            translation_font_size, translation_line_spacing = resolve_translation_text_metrics(
+                len(segment_asset.translation_lines),
+                is_cinematic=is_cinematic,
+            )
+            arabic_block_height = (len(verse_lines) * (arabic_font_size + arabic_line_spacing)) - arabic_line_spacing
+            preferred_arabic_top = ((VIDEO_HEIGHT - arabic_block_height) / 2) - (cinematic_arabic_offset if is_cinematic else 100)
+            arabic_top, _ = resolve_text_stack_positions(
+                arabic_block_height=arabic_block_height,
+                translation_line_count=len(segment_asset.translation_lines),
+                translation_font_size=translation_font_size,
+                translation_line_spacing=translation_line_spacing,
+                is_cinematic=is_cinematic,
+                preferred_arabic_top=preferred_arabic_top,
+                preferred_translation_top=cinematic_translation_top if is_cinematic else VIDEO_HEIGHT - 500,
+            )
+            dialogues.append(
+                build_ass_dialogue(
+                    verse_lines,
+                    start_time=segment_asset.start_time,
+                    end_time=segment_asset.end_time,
+                    font_size=arabic_font_size,
+                    line_spacing=arabic_line_spacing,
+                    top_y=arabic_top,
+                )
+            )
+    elif use_segment_overlays:
+        intro_padding = 0.45
+        outro_padding = 0.45
+        available_duration = max(1.0, duration - intro_padding - outro_padding)
+        segment_duration = available_duration / len(segment_assets)
+
+        for index, segment_asset in enumerate(segment_assets):
+            verse_lines = read_text_lines(segment_asset.arabic_lines)
+            if not verse_lines:
+                continue
+
+            start_time = intro_padding + (index * segment_duration)
+            end_time = duration - outro_padding if index == len(segment_assets) - 1 else start_time + segment_duration
+            arabic_font_size, arabic_line_spacing = resolve_arabic_text_metrics(
+                len(verse_lines),
+                is_cinematic=is_cinematic,
+                max_line_units=measure_arabic_line_units("\n".join(verse_lines)),
+            )
+            translation_font_size, translation_line_spacing = resolve_translation_text_metrics(
+                len(segment_asset.translation_lines),
+                is_cinematic=is_cinematic,
+            )
+            arabic_block_height = (len(verse_lines) * (arabic_font_size + arabic_line_spacing)) - arabic_line_spacing
+            preferred_arabic_top = ((VIDEO_HEIGHT - arabic_block_height) / 2) - (cinematic_arabic_offset if is_cinematic else 100)
+            arabic_top, _ = resolve_text_stack_positions(
+                arabic_block_height=arabic_block_height,
+                translation_line_count=len(segment_asset.translation_lines),
+                translation_font_size=translation_font_size,
+                translation_line_spacing=translation_line_spacing,
+                is_cinematic=is_cinematic,
+                preferred_arabic_top=preferred_arabic_top,
+                preferred_translation_top=cinematic_translation_top if is_cinematic else VIDEO_HEIGHT - 500,
+            )
+            dialogues.append(
+                build_ass_dialogue(
+                    verse_lines,
+                    start_time=start_time,
+                    end_time=end_time,
+                    font_size=arabic_font_size,
+                    line_spacing=arabic_line_spacing,
+                    top_y=arabic_top,
+                )
+            )
+    else:
+        verse_lines = read_text_lines(text_assets.get("verse", []))
+        if verse_lines:
+            verse_font_size, verse_line_spacing = resolve_arabic_text_metrics(
+                len(verse_lines),
+                is_cinematic=is_cinematic,
+                max_line_units=measure_arabic_line_units("\n".join(verse_lines)),
+            )
+            translation_font_size, translation_line_spacing = resolve_translation_text_metrics(
+                len(text_assets.get("translation", [])),
+                is_cinematic=is_cinematic,
+            )
+            verse_block_height = (len(verse_lines) * (verse_font_size + verse_line_spacing)) - verse_line_spacing
+            preferred_verse_top = ((VIDEO_HEIGHT - verse_block_height) / 2) - (cinematic_arabic_offset if is_cinematic else 110)
+            verse_top, _ = resolve_text_stack_positions(
+                arabic_block_height=verse_block_height,
+                translation_line_count=len(text_assets.get("translation", [])),
+                translation_font_size=translation_font_size,
+                translation_line_spacing=translation_line_spacing,
+                is_cinematic=is_cinematic,
+                preferred_arabic_top=preferred_verse_top,
+                preferred_translation_top=cinematic_translation_top if is_cinematic else VIDEO_HEIGHT - 470,
+            )
+            dialogues.append(
+                build_ass_dialogue(
+                    verse_lines,
+                    start_time=0.0,
+                    end_time=duration,
+                    font_size=verse_font_size,
+                    line_spacing=verse_line_spacing,
+                    top_y=verse_top,
+                )
+            )
+
+    if not dialogues:
+        return None
+
+    ass_lines = [
+        "[Script Info]",
+        "ScriptType: v4.00+",
+        "ScaledBorderAndShadow: yes",
+        f"PlayResX: {VIDEO_WIDTH}",
+        f"PlayResY: {VIDEO_HEIGHT}",
+        "WrapStyle: 1",
+        "",
+        "[V4+ Styles]",
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
+        f"Style: Arabic,{font_family},96,&H00FFFFFF,&H000000FF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,3,2,5,50,50,50,1",
+        "",
+        "[Events]",
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+    ]
+    ass_lines.extend(dialogues)
+
+    ass_path = temp_dir / "arabic_overlay.ass"
+    write_text_asset(ass_path, "\n".join(ass_lines))
+    return ass_path
+
+
+def build_ass_filter(
+    input_label: str,
+    output_label: str,
+    *,
+    ass_path: Path,
+    font_dir: Path | None,
+) -> str:
+    options = [f"filename='{escape_filter_path(ass_path)}'"]
+    if font_dir is not None:
+        options.append(f"fontsdir='{escape_filter_path(font_dir)}'")
+    return f"[{input_label}]ass={':'.join(options)}[{output_label}]"
+
+
+def prepare_ass_font_dir(font_file: Path | None, temp_dir: Path) -> Path | None:
+    if font_file is None or not font_file.exists():
+        return None
+
+    ass_font_dir = temp_dir / "ass-fonts"
+    ass_font_dir.mkdir(parents=True, exist_ok=True)
+    copied_font_path = ass_font_dir / font_file.name
+    if not copied_font_path.exists():
+        shutil.copy2(font_file, copied_font_path)
+    return ass_font_dir
+
+
+def build_render_environment(config: RenderConfig, temp_dir: Path) -> dict[str, str]:
+    env = os.environ.copy()
+    font_dirs: list[Path] = [PROJECT_DIR]
+
+    for font_path in {
+        resolve_drawtext_font_file(config.font_file),
+        resolve_drawtext_font_file(config.latin_font_file),
+    }:
+        if font_path is not None:
+            font_dirs.append(font_path.parent)
+
+    if sys.platform.startswith("win"):
+        font_dirs.append(Path("C:/Windows/Fonts"))
+
+    fontconfig_path = write_fontconfig_file(temp_dir, font_dirs)
+    env["FONTCONFIG_FILE"] = str(fontconfig_path)
+    env["FONTCONFIG_PATH"] = str(temp_dir)
+    env["FC_CONFIG_DIR"] = str(temp_dir)
+    return env
+
+
 def build_drawtext_filter(
     input_label: str,
     output_label: str,
@@ -4479,7 +4902,7 @@ def build_drawtext_filter(
         f"fontcolor={font_color}:"
         f"fontsize={font_size}:"
         f"line_spacing={line_spacing}:"
-        f"text_shaping=0:"
+        f"text_shaping=1:"
         f"fix_bounds=1:"
         f"{box_part}"
         f"borderw={border_width}:"
@@ -4617,31 +5040,8 @@ def create_text_assets(config: RenderConfig, temp_dir: Path) -> dict[str, list[P
         translation_text = "\n".join(filter(None, [english_surah, english_reciter]))
 
         brand_text = wrap_text(config.brand_text, width=24) if config.show_brand else ""
-def process_arabic_text(text: str) -> str:
-    if not text.strip():
-        return text
-    try:
-        import arabic_reshaper
-        from bidi.algorithm import get_display
-
-        configuration = {
-            "delete_harakat": False,
-            "support_marks": True,
-            "shift_harakat_position": False
-        }
-        reshaper = arabic_reshaper.ArabicReshaper(configuration=configuration)
-
-        lines = []
-        for line in text.splitlines():
-            reshaped = reshaper.reshape(line)
-            lines.append(get_display(reshaped))
-        return "\n".join(lines)
-    except ImportError:
-        return text
-
 def build_arabic_line_files(temp_dir: Path, prefix: str, text: str) -> list[Path]:
-    processed_text = process_arabic_text(text)
-    return build_line_files(temp_dir, prefix, processed_text)
+    return build_line_files(temp_dir, prefix, text)
 
 def create_text_assets(config: RenderConfig, temp_dir: Path) -> dict[str, list[Path]]:
     is_cinematic = is_cinematic_style(config.style_preset)
@@ -4679,6 +5079,7 @@ def create_text_assets(config: RenderConfig, temp_dir: Path) -> dict[str, list[P
             "surah": build_line_files(temp_dir, "surah", config.surah_name),
             "ayah": build_line_files(temp_dir, "ayah", f"Ayat {config.verse_reference}"),
             "brand": build_line_files(temp_dir, "brand", wrap_text(config.brand_text, width=24) if config.show_brand else ""),
+            "verse": build_arabic_line_files(temp_dir, "verse", build_wrapped_arabic_text(config.verse_text, is_cinematic=False)),
         }
         
         if config.arabic_surah_name:
@@ -4770,6 +5171,8 @@ def build_filter_complex(
     text_assets: dict[str, list[Path]],
     segment_assets: list[SegmentTextAsset],
     timed_segment_assets: list[TimedSegmentTextAsset],
+    arabic_ass_path: Path | None,
+    arabic_ass_font_dir: Path | None,
 ) -> str:
     is_cinematic = is_cinematic_style(config.style_preset)
     cinematic_variant = get_cinematic_variant(config.style_preset)
@@ -4852,6 +5255,8 @@ def build_filter_complex(
     is_minimalist = config.style_preset == "minimalist_info"
     alpha_expression = build_alpha_expression(duration)
     filters = [base_filter]
+    resolved_arabic_font = resolve_drawtext_font_file(config.font_file)
+    arabic_font_dir = arabic_ass_font_dir or (resolved_arabic_font.parent if resolved_arabic_font is not None else None)
     
     if is_minimalist:
         # Full screen darkening overlay
@@ -4882,12 +5287,32 @@ def build_filter_complex(
             font_file=config.latin_font_file or config.font_file, line_spacing=10, box_border=0, border_width=0, shadow_y=6, shadow_color="0x000000aa", shadow_x=0
         ))
         previous_label = "ayah_0"
+
+        verse = text_assets.get("verse", [])
+        if verse:
+            if arabic_ass_path is not None:
+                filters.append(
+                    build_ass_filter(
+                        previous_label,
+                        "arabic_ass_layer",
+                        ass_path=arabic_ass_path,
+                        font_dir=arabic_font_dir,
+                    )
+                )
+                previous_label = "arabic_ass_layer"
+            else:
+                filters.extend(build_text_block_filters(
+                    input_label=previous_label, output_prefix="verse", text_paths=verse,
+                    top_y=940, font_size=100, font_color="0xffffff", box_color=None, alpha_expression=alpha_expression,
+                    font_file=config.font_file, line_spacing=28, box_border=0, border_width=0, shadow_y=12, shadow_color="0x000000ee", shadow_x=0
+                ))
+                previous_label = f"verse_{len(verse)-1}"
         
         reciter = text_assets.get("reciter", [])
         if reciter:
             filters.extend(build_text_block_filters(
                 input_label=previous_label, output_prefix="reciter", text_paths=reciter,
-                top_y=1140, font_size=45, font_color="0xe2e8f0", box_color=None, alpha_expression=alpha_expression,
+                top_y=1225, font_size=40, font_color="0xe2e8f0", box_color=None, alpha_expression=alpha_expression,
                 font_file=config.latin_font_file or config.font_file, line_spacing=10, box_border=0, border_width=0, shadow_y=6, shadow_color="0x000000aa", shadow_x=0
             ))
             previous_label = "reciter_0"
@@ -4934,6 +5359,17 @@ def build_filter_complex(
     )
     previous_label = get_last_layer_label("meta_layer", text_assets["meta"], "base_waves" if is_minimalist else "base")
 
+    if arabic_ass_path is not None:
+        filters.append(
+            build_ass_filter(
+                previous_label,
+                "arabic_ass_layer",
+                ass_path=arabic_ass_path,
+                font_dir=arabic_font_dir,
+            )
+        )
+        previous_label = "arabic_ass_layer"
+
     if use_timed_segment_overlays:
         for index, segment_asset in enumerate(timed_segment_assets):
             segment_alpha = build_timed_alpha_expression(segment_asset.start_time, segment_asset.end_time)
@@ -4958,29 +5394,30 @@ def build_filter_complex(
                 preferred_arabic_top=preferred_arabic_top,
                 preferred_translation_top=cinematic_translation_top if is_cinematic else VIDEO_HEIGHT - 500,
             )
-            arabic_prefix = f"timed_segment_arabic_layer_{index}"
+            if arabic_ass_path is None:
+                arabic_prefix = f"timed_segment_arabic_layer_{index}"
 
-            filters.extend(
-                build_text_block_filters(
-                    input_label=previous_label,
-                    output_prefix=arabic_prefix,
-                    text_paths=segment_asset.arabic_lines,
-                    top_y=arabic_top,
-                    font_size=arabic_font_size,
-                    font_color="white",
-                    box_color=None,
-                    alpha_expression=segment_alpha,
-                    font_file=config.font_file,
-                    line_spacing=arabic_line_spacing,
-                    box_border=0,
-                    border_width=2 if is_cinematic else 2,
-                    border_color="0x000000cc" if is_cinematic else "0x0f172acc",
-                    shadow_x=0,
-                    shadow_y=16 if is_cinematic else 12,
-                    shadow_color="0x000000ee",
+                filters.extend(
+                    build_text_block_filters(
+                        input_label=previous_label,
+                        output_prefix=arabic_prefix,
+                        text_paths=segment_asset.arabic_lines,
+                        top_y=arabic_top,
+                        font_size=arabic_font_size,
+                        font_color="white",
+                        box_color=None,
+                        alpha_expression=segment_alpha,
+                        font_file=config.font_file,
+                        line_spacing=arabic_line_spacing,
+                        box_border=0,
+                        border_width=2 if is_cinematic else 2,
+                        border_color="0x000000cc" if is_cinematic else "0x0f172acc",
+                        shadow_x=0,
+                        shadow_y=16 if is_cinematic else 12,
+                        shadow_color="0x000000ee",
+                    )
                 )
-            )
-            previous_label = get_last_layer_label(arabic_prefix, segment_asset.arabic_lines, previous_label)
+                previous_label = get_last_layer_label(arabic_prefix, segment_asset.arabic_lines, previous_label)
 
             translation_prefix = f"timed_segment_translation_layer_{index}"
             filters.extend(
@@ -5035,29 +5472,30 @@ def build_filter_complex(
                 preferred_arabic_top=preferred_arabic_top,
                 preferred_translation_top=cinematic_translation_top if is_cinematic else VIDEO_HEIGHT - 500,
             )
-            arabic_prefix = f"segment_arabic_layer_{index}"
+            if arabic_ass_path is None:
+                arabic_prefix = f"segment_arabic_layer_{index}"
 
-            filters.extend(
-                build_text_block_filters(
-                    input_label=previous_label,
-                    output_prefix=arabic_prefix,
-                    text_paths=segment_asset.arabic_lines,
-                    top_y=arabic_top,
-                    font_size=arabic_font_size,
-                    font_color="white",
-                    box_color=None,
-                    alpha_expression=segment_alpha,
-                    font_file=config.font_file,
-                    line_spacing=arabic_line_spacing,
-                    box_border=0,
-                    border_width=2 if is_cinematic else 2,
-                    border_color="0x000000cc" if is_cinematic else "0x0f172acc",
-                    shadow_x=0,
-                    shadow_y=16 if is_cinematic else 12,
-                    shadow_color="0x000000ee" if is_cinematic else "0x000000dd",
+                filters.extend(
+                    build_text_block_filters(
+                        input_label=previous_label,
+                        output_prefix=arabic_prefix,
+                        text_paths=segment_asset.arabic_lines,
+                        top_y=arabic_top,
+                        font_size=arabic_font_size,
+                        font_color="white",
+                        box_color=None,
+                        alpha_expression=segment_alpha,
+                        font_file=config.font_file,
+                        line_spacing=arabic_line_spacing,
+                        box_border=0,
+                        border_width=2 if is_cinematic else 2,
+                        border_color="0x000000cc" if is_cinematic else "0x0f172acc",
+                        shadow_x=0,
+                        shadow_y=16 if is_cinematic else 12,
+                        shadow_color="0x000000ee" if is_cinematic else "0x000000dd",
+                    )
                 )
-            )
-            previous_label = get_last_layer_label(arabic_prefix, segment_asset.arabic_lines, previous_label)
+                previous_label = get_last_layer_label(arabic_prefix, segment_asset.arabic_lines, previous_label)
 
             translation_prefix = f"segment_translation_layer_{index}"
             filters.extend(
@@ -5102,27 +5540,28 @@ def build_filter_complex(
             preferred_arabic_top=preferred_verse_top,
             preferred_translation_top=cinematic_translation_top if is_cinematic else VIDEO_HEIGHT - 470,
         )
-        filters.extend(
-            build_text_block_filters(
-                input_label=previous_label,
-                output_prefix="verse_layer",
-                text_paths=text_assets["verse"],
-                top_y=verse_top,
-                font_size=verse_font_size,
-                font_color="white",
-                box_color=None,
-                alpha_expression=alpha_expression,
-                font_file=config.font_file,
-                line_spacing=verse_line_spacing,
-                box_border=0,
-                border_width=2 if is_cinematic else 2,
-                border_color="0x000000cc" if is_cinematic else "0x0f172acc",
-                shadow_x=0,
-                shadow_y=16 if is_cinematic else 10,
-                shadow_color="0x000000ee" if is_cinematic else "0x000000dd",
+        if arabic_ass_path is None:
+            filters.extend(
+                build_text_block_filters(
+                    input_label=previous_label,
+                    output_prefix="verse_layer",
+                    text_paths=text_assets["verse"],
+                    top_y=verse_top,
+                    font_size=verse_font_size,
+                    font_color="white",
+                    box_color=None,
+                    alpha_expression=alpha_expression,
+                    font_file=config.font_file,
+                    line_spacing=verse_line_spacing,
+                    box_border=0,
+                    border_width=2 if is_cinematic else 2,
+                    border_color="0x000000cc" if is_cinematic else "0x0f172acc",
+                    shadow_x=0,
+                    shadow_y=16 if is_cinematic else 10,
+                    shadow_color="0x000000ee" if is_cinematic else "0x000000dd",
+                )
             )
-        )
-        previous_label = get_last_layer_label("verse_layer", text_assets["verse"], previous_label)
+            previous_label = get_last_layer_label("verse_layer", text_assets["verse"], previous_label)
 
         if "translation" in text_assets:
             filters.extend(
@@ -5183,6 +5622,15 @@ def build_command(config: RenderConfig, duration: float, temp_dir: Path, ffmpeg_
     text_assets = create_text_assets(config, temp_dir)
     segment_assets = create_segment_assets(config, temp_dir)
     timed_segment_assets = create_timed_segment_assets(config, temp_dir)
+    arabic_ass_path = create_arabic_ass_file(
+        config,
+        duration,
+        temp_dir,
+        text_assets,
+        segment_assets,
+        timed_segment_assets,
+    )
+    arabic_ass_font_dir = prepare_ass_font_dir(resolve_drawtext_font_file(config.font_file), temp_dir)
 
     command: list[str] = [ffmpeg_command, "-y"]
 
@@ -5202,7 +5650,16 @@ def build_command(config: RenderConfig, duration: float, temp_dir: Path, ffmpeg_
 
     command.extend(["-i", str(config.audio_path)])
 
-    filter_complex = build_filter_complex(config, duration, background_kind, text_assets, segment_assets, timed_segment_assets)
+    filter_complex = build_filter_complex(
+        config,
+        duration,
+        background_kind,
+        text_assets,
+        segment_assets,
+        timed_segment_assets,
+        arabic_ass_path,
+        arabic_ass_font_dir,
+    )
 
     audio_fade_start = max(0.0, duration - 0.8)
     audio_filter = f"afade=t=in:st=0:d=0.4,afade=t=out:st={audio_fade_start:.2f}:d=0.8"
@@ -5251,7 +5708,8 @@ def render_video(config: RenderConfig) -> None:
     with tempfile.TemporaryDirectory(prefix="quran-short-") as temp_folder:
         temp_dir = Path(temp_folder)
         command = build_command(config, duration, temp_dir, ffmpeg_command)
-        subprocess.run(command, check=True)
+        render_env = build_render_environment(config, temp_dir)
+        subprocess.run(command, check=True, env=render_env)
 
 
 def main() -> int:
