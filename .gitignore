@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 .secrets/
 .cache/
+!.cache/auto_history.json
 outputs/
 .tmp/
 .tmp_runtime/
