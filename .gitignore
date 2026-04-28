@@ -1,5 +1,12 @@
 __pycache__/
 *.pyc
 .secrets/
-.cache/downloads/
+.cache/
 outputs/
+.tmp/
+.tmp_runtime/
+.bin/
+output.log
+*.jfif
+*.mp3
+*.log

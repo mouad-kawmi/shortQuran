@@ -4446,13 +4446,20 @@ def resolve_text_stack_positions(
     preferred_arabic_top: float,
     preferred_translation_top: float,
 ) -> tuple[int, int]:
+    top_margin = 260 if is_cinematic else 170
+    bottom_margin = 250 if is_cinematic else 160
+
     if translation_line_count <= 0:
-        return int(round(preferred_arabic_top)), int(round(preferred_translation_top))
+        max_arabic_top = VIDEO_HEIGHT - bottom_margin - arabic_block_height
+        if max_arabic_top < top_margin:
+            centered_top = max(40.0, (VIDEO_HEIGHT - arabic_block_height) / 2)
+            return int(round(centered_top)), int(round(preferred_translation_top))
+
+        arabic_top = min(max(preferred_arabic_top, top_margin), max_arabic_top)
+        return int(round(arabic_top)), int(round(preferred_translation_top))
 
     translation_block_height = (translation_line_count * (translation_font_size + translation_line_spacing)) - translation_line_spacing
     minimum_gap = 54 if is_cinematic else 34
-    top_margin = 260 if is_cinematic else 170
-    bottom_margin = 250 if is_cinematic else 160
 
     arabic_top = preferred_arabic_top
     translation_top = max(preferred_translation_top, arabic_top + arabic_block_height + minimum_gap)
@@ -4465,6 +4472,25 @@ def resolve_text_stack_positions(
         translation_top = min(translation_top, max_translation_top)
 
     return int(round(arabic_top)), int(round(translation_top))
+
+
+def resolve_minimalist_arabic_layout(text_lines: list[str]) -> tuple[int, int, int]:
+    font_size, line_spacing = resolve_arabic_text_metrics(
+        len(text_lines),
+        is_cinematic=False,
+        max_line_units=measure_arabic_line_units("\n".join(text_lines)),
+    )
+    block_height = (len(text_lines) * (font_size + line_spacing)) - line_spacing
+    top_y, _ = resolve_text_stack_positions(
+        arabic_block_height=block_height,
+        translation_line_count=0,
+        translation_font_size=0,
+        translation_line_spacing=0,
+        is_cinematic=False,
+        preferred_arabic_top=880,
+        preferred_translation_top=0,
+    )
+    return font_size, line_spacing, top_y
 
 
 def write_text_asset(path: Path, content: str) -> None:
@@ -4668,18 +4694,61 @@ def create_arabic_ass_file(
     dialogues: list[str] = []
 
     if config.style_preset == "minimalist_info":
-        verse_lines = read_text_lines(text_assets.get("verse", []))
-        if verse_lines:
-            dialogues.append(
-                build_ass_dialogue(
-                    verse_lines,
-                    start_time=0.0,
-                    end_time=duration,
-                    font_size=100,
-                    line_spacing=28,
-                    top_y=940,
+        if timed_segment_assets:
+            for segment_asset in timed_segment_assets:
+                verse_lines = read_text_lines(segment_asset.arabic_lines)
+                if not verse_lines:
+                    continue
+
+                arabic_font_size, arabic_line_spacing, arabic_top = resolve_minimalist_arabic_layout(verse_lines)
+                dialogues.append(
+                    build_ass_dialogue(
+                        verse_lines,
+                        start_time=segment_asset.start_time,
+                        end_time=segment_asset.end_time,
+                        font_size=arabic_font_size,
+                        line_spacing=arabic_line_spacing,
+                        top_y=arabic_top,
+                    )
                 )
-            )
+        elif segment_assets:
+            intro_padding = 0.45
+            outro_padding = 0.45
+            available_duration = max(1.0, duration - intro_padding - outro_padding)
+            segment_duration = available_duration / len(segment_assets)
+
+            for index, segment_asset in enumerate(segment_assets):
+                verse_lines = read_text_lines(segment_asset.arabic_lines)
+                if not verse_lines:
+                    continue
+
+                start_time = intro_padding + (index * segment_duration)
+                end_time = duration - outro_padding if index == len(segment_assets) - 1 else start_time + segment_duration
+                arabic_font_size, arabic_line_spacing, arabic_top = resolve_minimalist_arabic_layout(verse_lines)
+                dialogues.append(
+                    build_ass_dialogue(
+                        verse_lines,
+                        start_time=start_time,
+                        end_time=end_time,
+                        font_size=arabic_font_size,
+                        line_spacing=arabic_line_spacing,
+                        top_y=arabic_top,
+                    )
+                )
+        else:
+            verse_lines = read_text_lines(text_assets.get("verse", []))
+            if verse_lines:
+                arabic_font_size, arabic_line_spacing, arabic_top = resolve_minimalist_arabic_layout(verse_lines)
+                dialogues.append(
+                    build_ass_dialogue(
+                        verse_lines,
+                        start_time=0.0,
+                        end_time=duration,
+                        font_size=arabic_font_size,
+                        line_spacing=arabic_line_spacing,
+                        top_y=arabic_top,
+                    )
+                )
     elif use_timed_segment_overlays:
         for segment_asset in timed_segment_assets:
             verse_lines = read_text_lines(segment_asset.arabic_lines)
@@ -5115,7 +5184,7 @@ def create_text_assets(config: RenderConfig, temp_dir: Path) -> dict[str, list[P
 
 
 def create_segment_assets(config: RenderConfig, temp_dir: Path) -> list[SegmentTextAsset]:
-    if not config.word_segments or config.style_preset == "minimalist_info":
+    if not config.word_segments:
         return []
 
     is_cinematic = is_cinematic_style(config.style_preset)
@@ -5134,7 +5203,7 @@ def create_segment_assets(config: RenderConfig, temp_dir: Path) -> list[SegmentT
 
 
 def create_timed_segment_assets(config: RenderConfig, temp_dir: Path) -> list[TimedSegmentTextAsset]:
-    if not config.timed_segments or config.style_preset == "minimalist_info":
+    if not config.timed_segments:
         return []
 
     is_cinematic = is_cinematic_style(config.style_preset)
@@ -5296,11 +5365,73 @@ def build_filter_complex(
                     )
                 )
                 previous_label = "arabic_ass_layer"
+            elif timed_segment_assets:
+                for index, segment_asset in enumerate(timed_segment_assets):
+                    segment_alpha = build_timed_alpha_expression(segment_asset.start_time, segment_asset.end_time)
+                    arabic_font_size, arabic_line_spacing, arabic_top = resolve_minimalist_arabic_layout(
+                        read_text_lines(segment_asset.arabic_lines)
+                    )
+                    arabic_prefix = f"minimalist_timed_arabic_{index}"
+                    filters.extend(
+                        build_text_block_filters(
+                            input_label=previous_label,
+                            output_prefix=arabic_prefix,
+                            text_paths=segment_asset.arabic_lines,
+                            top_y=arabic_top,
+                            font_size=arabic_font_size,
+                            font_color="0xffffff",
+                            box_color=None,
+                            alpha_expression=segment_alpha,
+                            font_file=config.font_file,
+                            line_spacing=arabic_line_spacing,
+                            box_border=0,
+                            border_width=0,
+                            shadow_y=12,
+                            shadow_color="0x000000ee",
+                            shadow_x=0,
+                        )
+                    )
+                    previous_label = get_last_layer_label(arabic_prefix, segment_asset.arabic_lines, previous_label)
+            elif segment_assets:
+                intro_padding = 0.45
+                outro_padding = 0.45
+                available_duration = max(1.0, duration - intro_padding - outro_padding)
+                segment_duration = available_duration / len(segment_assets)
+
+                for index, segment_asset in enumerate(segment_assets):
+                    start_time = intro_padding + (index * segment_duration)
+                    end_time = duration - outro_padding if index == len(segment_assets) - 1 else start_time + segment_duration
+                    segment_alpha = build_timed_alpha_expression(start_time, end_time)
+                    arabic_font_size, arabic_line_spacing, arabic_top = resolve_minimalist_arabic_layout(
+                        read_text_lines(segment_asset.arabic_lines)
+                    )
+                    arabic_prefix = f"minimalist_segment_arabic_{index}"
+                    filters.extend(
+                        build_text_block_filters(
+                            input_label=previous_label,
+                            output_prefix=arabic_prefix,
+                            text_paths=segment_asset.arabic_lines,
+                            top_y=arabic_top,
+                            font_size=arabic_font_size,
+                            font_color="0xffffff",
+                            box_color=None,
+                            alpha_expression=segment_alpha,
+                            font_file=config.font_file,
+                            line_spacing=arabic_line_spacing,
+                            box_border=0,
+                            border_width=0,
+                            shadow_y=12,
+                            shadow_color="0x000000ee",
+                            shadow_x=0,
+                        )
+                    )
+                    previous_label = get_last_layer_label(arabic_prefix, segment_asset.arabic_lines, previous_label)
             else:
+                arabic_font_size, arabic_line_spacing, arabic_top = resolve_minimalist_arabic_layout(read_text_lines(verse))
                 filters.extend(build_text_block_filters(
                     input_label=previous_label, output_prefix="verse", text_paths=verse,
-                    top_y=940, font_size=100, font_color="0xffffff", box_color=None, alpha_expression=alpha_expression,
-                    font_file=config.font_file, line_spacing=28, box_border=0, border_width=0, shadow_y=12, shadow_color="0x000000ee", shadow_x=0
+                    top_y=arabic_top, font_size=arabic_font_size, font_color="0xffffff", box_color=None, alpha_expression=alpha_expression,
+                    font_file=config.font_file, line_spacing=arabic_line_spacing, box_border=0, border_width=0, shadow_y=12, shadow_color="0x000000ee", shadow_x=0
                 ))
                 previous_label = f"verse_{len(verse)-1}"
         
