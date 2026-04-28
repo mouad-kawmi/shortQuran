@@ -5072,8 +5072,6 @@ def create_text_assets(config: RenderConfig, temp_dir: Path) -> dict[str, list[P
         return assets
 
     if is_minimalist:
-        english_reciter = config.reciter_name or ""
-        
         assets = {
             "meta": [],
             "surah": build_line_files(temp_dir, "surah", config.surah_name),
@@ -5084,8 +5082,6 @@ def create_text_assets(config: RenderConfig, temp_dir: Path) -> dict[str, list[P
         
         if config.arabic_surah_name:
             assets["arabic_surah"] = build_arabic_line_files(temp_dir, "arabic_surah", config.arabic_surah_name)
-        if english_reciter:
-            assets["reciter"] = build_line_files(temp_dir, "reciter", f"Qari: {english_reciter}")
             
         return assets
 
@@ -5308,15 +5304,6 @@ def build_filter_complex(
                 ))
                 previous_label = f"verse_{len(verse)-1}"
         
-        reciter = text_assets.get("reciter", [])
-        if reciter:
-            filters.extend(build_text_block_filters(
-                input_label=previous_label, output_prefix="reciter", text_paths=reciter,
-                top_y=1225, font_size=40, font_color="0xe2e8f0", box_color=None, alpha_expression=alpha_expression,
-                font_file=config.latin_font_file or config.font_file, line_spacing=10, box_border=0, border_width=0, shadow_y=6, shadow_color="0x000000aa", shadow_x=0
-            ))
-            previous_label = "reciter_0"
-            
         if text_assets["brand"]:
             filters.extend(build_text_block_filters(
                 input_label=previous_label, output_prefix="brand", text_paths=text_assets["brand"],
