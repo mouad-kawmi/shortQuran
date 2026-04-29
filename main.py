@@ -46,6 +46,7 @@ BISMILLAH_ARABIC = "بِسْمِ اللَّهِ الرَّحْمَٰنِ الر�
 BISMILLAH_TRANSLATION = "In the name of Allah, the Most Compassionate, the Most Merciful."
 AUTO_HISTORY_FILE = ".cache/auto_history.json"
 AUTO_STYLE_PRESETS = (
+    "cinematic",
     "minimalist_info",
 )
 AUTO_TITLE_HOOKS = {
@@ -2095,14 +2096,13 @@ def build_youtube_hashtags(config: RenderConfig) -> list[str]:
         return f"#{token}" if token else None
 
     raw_hashtags = [
-        "#Shorts",
-        "#Quran",
-        "#Islam",
-        "#QuranShorts",
-        "#QuranRecitation",
-        "#القرآن",
+        "#shorts",
+        "#quran",
+        "#quranrecitation",
+        "#qurantilawat",
+        "#qurantranslation",
         "#القرآن_الكريم",
-        "#راحه_نفسيه",
+        "#القرآن",
         make_hashtag(surah_base, prefix="Surah"),
         make_hashtag(reciter_label),
     ]
@@ -4395,17 +4395,17 @@ def resolve_arabic_text_metrics(line_count: int, *, is_cinematic: bool, max_line
     if not is_cinematic:
         font_size, line_spacing = 88, 24
     elif line_count >= 7:
-        font_size, line_spacing = 72, 26
+        font_size, line_spacing = 88, 28
     elif line_count == 6:
-        font_size, line_spacing = 78, 28
+        font_size, line_spacing = 94, 30
     elif line_count >= 5:
-        font_size, line_spacing = 84, 32
+        font_size, line_spacing = 100, 32
     elif line_count == 4:
-        font_size, line_spacing = 92, 30
+        font_size, line_spacing = 110, 30
     elif line_count == 3:
-        font_size, line_spacing = 100, 26
+        font_size, line_spacing = 120, 28
     else:
-        font_size, line_spacing = 112, 22
+        font_size, line_spacing = 140, 24
 
     if max_line_units >= 22:
         font_size -= 16
@@ -4416,7 +4416,7 @@ def resolve_arabic_text_metrics(line_count: int, *, is_cinematic: bool, max_line
     elif max_line_units >= 16:
         font_size -= 4
 
-    return max(62 if is_cinematic else 70, font_size), line_spacing
+    return max(76 if is_cinematic else 70, font_size), line_spacing
 
 
 def resolve_translation_text_metrics(line_count: int, *, is_cinematic: bool) -> tuple[int, int]:
@@ -4428,12 +4428,12 @@ def resolve_translation_text_metrics(line_count: int, *, is_cinematic: bool) -> 
         return 40, 14
 
     if line_count >= 7:
-        return 32, 8
-    if line_count >= 5:
         return 38, 10
+    if line_count >= 5:
+        return 44, 12
     if line_count >= 4:
-        return 42, 10
-    return 48, 12
+        return 50, 12
+    return 56, 14
 
 
 def resolve_text_stack_positions(
@@ -4459,7 +4459,7 @@ def resolve_text_stack_positions(
         return int(round(arabic_top)), int(round(preferred_translation_top))
 
     translation_block_height = (translation_line_count * (translation_font_size + translation_line_spacing)) - translation_line_spacing
-    minimum_gap = 54 if is_cinematic else 34
+    minimum_gap = 30 if is_cinematic else 34
 
     arabic_top = preferred_arabic_top
     translation_top = max(preferred_translation_top, arabic_top + arabic_block_height + minimum_gap)
@@ -4632,7 +4632,7 @@ def build_ass_dialogue(
     ass_text = escape_ass_text("\n".join(text_lines))
     override = (
         f"{{\\an5\\q1\\pos({VIDEO_WIDTH // 2},{center_y})"
-        f"\\fs{font_size}\\bord3\\shad2}}"
+        f"\\fs{font_size}\\bord10\\shad0}}"
     )
     return (
         "Dialogue: 0,"
@@ -4685,8 +4685,8 @@ def create_arabic_ass_file(
 
     is_cinematic = is_cinematic_style(config.style_preset)
     cinematic_variant = get_cinematic_variant(config.style_preset)
-    cinematic_arabic_offset = 160 if cinematic_variant == "compact" else 110 if cinematic_variant == "spacious" else 132
-    cinematic_translation_top = 1110 if cinematic_variant == "compact" else 1160 if cinematic_variant == "spacious" else 1125
+    cinematic_arabic_offset = 100 if cinematic_variant == "compact" else 60 if cinematic_variant == "spacious" else 80
+    cinematic_translation_top = 980 if cinematic_variant == "compact" else 1020 if cinematic_variant == "spacious" else 1000
 
     use_timed_segment_overlays = bool(timed_segment_assets) and not config.prefer_static_text_overlay
     use_segment_overlays = bool(segment_assets) and not config.prefer_static_text_overlay
@@ -4875,7 +4875,7 @@ def create_arabic_ass_file(
         "",
         "[V4+ Styles]",
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
-        f"Style: Arabic,{font_family},96,&H00FFFFFF,&H000000FF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,3,2,5,50,50,50,1",
+        f"Style: Arabic,{font_family},110,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,10,0,5,50,50,50,1",
         "",
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
@@ -5243,8 +5243,8 @@ def build_filter_complex(
     cinematic_variant = get_cinematic_variant(config.style_preset)
     cinematic_meta_top = 78 if cinematic_variant == "compact" else 112 if cinematic_variant == "spacious" else 92
     cinematic_meta_font_size = 26 if cinematic_variant == "compact" else 30 if cinematic_variant == "spacious" else 28
-    cinematic_arabic_offset = 160 if cinematic_variant == "compact" else 110 if cinematic_variant == "spacious" else 132
-    cinematic_translation_top = 1110 if cinematic_variant == "compact" else 1160 if cinematic_variant == "spacious" else 1125
+    cinematic_arabic_offset = 100 if cinematic_variant == "compact" else 60 if cinematic_variant == "spacious" else 80
+    cinematic_translation_top = 980 if cinematic_variant == "compact" else 1020 if cinematic_variant == "spacious" else 1000
     cinematic_image_blur = 4 if cinematic_variant == "compact" else 2 if cinematic_variant == "spacious" else 3
     cinematic_video_blur = 3 if cinematic_variant == "compact" else 1 if cinematic_variant == "spacious" else 2
     cinematic_overlay_alpha = "0.30" if cinematic_variant == "compact" else "0.18" if cinematic_variant == "spacious" else "0.24"
@@ -5385,9 +5385,10 @@ def build_filter_complex(
                             font_file=config.font_file,
                             line_spacing=arabic_line_spacing,
                             box_border=0,
-                            border_width=0,
-                            shadow_y=12,
-                            shadow_color="0x000000ee",
+                            border_width=10,
+                            border_color="black",
+                            shadow_y=0,
+                            shadow_color="0x00000000",
                             shadow_x=0,
                         )
                     )
@@ -5419,9 +5420,10 @@ def build_filter_complex(
                             font_file=config.font_file,
                             line_spacing=arabic_line_spacing,
                             box_border=0,
-                            border_width=0,
-                            shadow_y=12,
-                            shadow_color="0x000000ee",
+                            border_width=10,
+                            border_color="black",
+                            shadow_y=0,
+                            shadow_color="0x00000000",
                             shadow_x=0,
                         )
                     )
@@ -5431,7 +5433,7 @@ def build_filter_complex(
                 filters.extend(build_text_block_filters(
                     input_label=previous_label, output_prefix="verse", text_paths=verse,
                     top_y=arabic_top, font_size=arabic_font_size, font_color="0xffffff", box_color=None, alpha_expression=alpha_expression,
-                    font_file=config.font_file, line_spacing=arabic_line_spacing, box_border=0, border_width=0, shadow_y=12, shadow_color="0x000000ee", shadow_x=0
+                    font_file=config.font_file, line_spacing=arabic_line_spacing, box_border=0, border_width=10, border_color="black", shadow_y=0, shadow_color="0x00000000", shadow_x=0
                 ))
                 previous_label = f"verse_{len(verse)-1}"
         
@@ -5528,11 +5530,11 @@ def build_filter_complex(
                         font_file=config.font_file,
                         line_spacing=arabic_line_spacing,
                         box_border=0,
-                        border_width=2 if is_cinematic else 2,
-                        border_color="0x000000cc" if is_cinematic else "0x0f172acc",
+                        border_width=10,
+                        border_color="black",
                         shadow_x=0,
-                        shadow_y=16 if is_cinematic else 12,
-                        shadow_color="0x000000ee",
+                        shadow_y=0,
+                        shadow_color="0x00000000",
                     )
                 )
                 previous_label = get_last_layer_label(arabic_prefix, segment_asset.arabic_lines, previous_label)
@@ -5550,12 +5552,12 @@ def build_filter_complex(
                     alpha_expression=segment_alpha,
                     font_file=config.latin_font_file or (None if is_cinematic else config.font_file),
                     line_spacing=translation_line_spacing,
-                    box_border=0 if is_cinematic else 12,
-                    border_width=0 if is_cinematic else 1,
-                    border_color="0x00000000" if is_cinematic else "0x111827aa",
+                    box_border=0,
+                    border_width=8,
+                    border_color="black",
                     shadow_x=0,
-                    shadow_y=8 if is_cinematic else 6,
-                    shadow_color="0x000000cc",
+                    shadow_y=0,
+                    shadow_color="0x00000000",
                 )
             )
             previous_label = get_last_layer_label(translation_prefix, segment_asset.translation_lines, previous_label)
@@ -5606,11 +5608,11 @@ def build_filter_complex(
                         font_file=config.font_file,
                         line_spacing=arabic_line_spacing,
                         box_border=0,
-                        border_width=2 if is_cinematic else 2,
-                        border_color="0x000000cc" if is_cinematic else "0x0f172acc",
+                        border_width=10,
+                        border_color="black",
                         shadow_x=0,
-                        shadow_y=16 if is_cinematic else 12,
-                        shadow_color="0x000000ee" if is_cinematic else "0x000000dd",
+                        shadow_y=0,
+                        shadow_color="0x00000000",
                     )
                 )
                 previous_label = get_last_layer_label(arabic_prefix, segment_asset.arabic_lines, previous_label)
@@ -5628,12 +5630,12 @@ def build_filter_complex(
                     alpha_expression=segment_alpha,
                     font_file=config.latin_font_file or (None if is_cinematic else config.font_file),
                     line_spacing=translation_line_spacing,
-                    box_border=0 if is_cinematic else 12,
-                    border_width=0 if is_cinematic else 1,
-                    border_color="0x00000000" if is_cinematic else "0x111827aa",
+                    box_border=0,
+                    border_width=8,
+                    border_color="black",
                     shadow_x=0,
-                    shadow_y=8 if is_cinematic else 6,
-                    shadow_color="0x000000cc" if is_cinematic else "0x000000aa",
+                    shadow_y=0,
+                    shadow_color="0x00000000",
                 )
             )
             previous_label = get_last_layer_label(translation_prefix, segment_asset.translation_lines, previous_label)
@@ -5672,11 +5674,11 @@ def build_filter_complex(
                     font_file=config.font_file,
                     line_spacing=verse_line_spacing,
                     box_border=0,
-                    border_width=2 if is_cinematic else 2,
-                    border_color="0x000000cc" if is_cinematic else "0x0f172acc",
+                    border_width=10,
+                    border_color="black",
                     shadow_x=0,
-                    shadow_y=16 if is_cinematic else 10,
-                    shadow_color="0x000000ee" if is_cinematic else "0x000000dd",
+                    shadow_y=0,
+                    shadow_color="0x00000000",
                 )
             )
             previous_label = get_last_layer_label("verse_layer", text_assets["verse"], previous_label)
@@ -5694,12 +5696,12 @@ def build_filter_complex(
                     alpha_expression=alpha_expression,
                     font_file=config.latin_font_file or (None if is_cinematic else config.font_file),
                     line_spacing=translation_line_spacing,
-                    box_border=0 if is_cinematic and config.prefer_static_text_overlay else 18 if is_cinematic else 0,
-                    border_width=0 if is_cinematic else 1,
-                    border_color="0x00000000" if is_cinematic else "0x111827cc",
+                    box_border=0,
+                    border_width=8,
+                    border_color="black",
                     shadow_x=0,
-                    shadow_y=10 if is_cinematic and config.prefer_static_text_overlay else 8 if is_cinematic else 6,
-                    shadow_color="0x000000ee" if is_cinematic and config.prefer_static_text_overlay else "0x000000cc" if is_cinematic else "0x000000bb",
+                    shadow_y=0,
+                    shadow_color="0x00000000",
                 )
             )
             previous_label = get_last_layer_label("translation_layer", text_assets["translation"], previous_label)
