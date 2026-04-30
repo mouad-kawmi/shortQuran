@@ -130,7 +130,7 @@ CONTENT_TYPE_EXTENSIONS = {
     "application/x-font-otf": ".otf",
     "application/octet-stream": "",
 }
-VERSES_AUDIO_BASE_URL = "https://verses.quran.foundation/"
+VERSES_AUDIO_BASE_URL = "https://everyayah.com/data"
 PROJECT_DIR = Path(__file__).resolve().parent
 PROJECT_ARABIC_FONT_FILENAMES = (
     "quran_font.ttf",
@@ -260,28 +260,68 @@ class AutoReciter:
 
 BUILTIN_VERSE_RECITATIONS = {
     "alafasy": VerseRecitationSource(
-        relative_path="Alafasy/mp3",
+        relative_path="Alafasy_128kbps",
         reciter_name="Mishari Rashid al-`Afasy",
     ),
     "mishary": VerseRecitationSource(
-        relative_path="Alafasy/mp3",
+        relative_path="Alafasy_128kbps",
         reciter_name="Mishari Rashid al-`Afasy",
     ),
     "mishari": VerseRecitationSource(
-        relative_path="Alafasy/mp3",
+        relative_path="Alafasy_128kbps",
         reciter_name="Mishari Rashid al-`Afasy",
     ),
     "afasy": VerseRecitationSource(
-        relative_path="Alafasy/mp3",
+        relative_path="Alafasy_128kbps",
         reciter_name="Mishari Rashid al-`Afasy",
     ),
     "abdulbaset_mujawwad": VerseRecitationSource(
-        relative_path="AbdulBaset/Mujawwad/mp3",
+        relative_path="Abdul_Basit_Mujawwad_128kbps",
         reciter_name="Abdul Basit Abdus Samad",
     ),
     "abdul_basit_mujawwad": VerseRecitationSource(
-        relative_path="AbdulBaset/Mujawwad/mp3",
+        relative_path="Abdul_Basit_Mujawwad_128kbps",
         reciter_name="Abdul Basit Abdus Samad",
+    ),
+    "husary": VerseRecitationSource(
+        relative_path="Husary_128kbps",
+        reciter_name="Mahmoud Khalil Al-Husary",
+    ),
+    "minshawi": VerseRecitationSource(
+        relative_path="Minshawy_Murattal_128kbps",
+        reciter_name="Mohamed Siddiq El-Minshawi",
+    ),
+    "sudais": VerseRecitationSource(
+        relative_path="Abdurrahmaan_As-Sudais_192kbps",
+        reciter_name="Abdurrahman As-Sudais",
+    ),
+    "shuraym": VerseRecitationSource(
+        relative_path="Saood_ash-Shuraym_128kbps",
+        reciter_name="Saud Al-Shuraim",
+    ),
+    "maher": VerseRecitationSource(
+        relative_path="MaherAlMuaiqly128kbps",
+        reciter_name="Maher Al Muaiqly",
+    ),
+    "yasser": VerseRecitationSource(
+        relative_path="Yasser_Ad-Dussary_128kbps",
+        reciter_name="Yasser Al-Dosari",
+    ),
+    "ajamy": VerseRecitationSource(
+        relative_path="ahmed_ibn_ali_al_ajamy_128kbps",
+        reciter_name="Ahmed ibn Ali al-Ajamy",
+    ),
+    "shatri": VerseRecitationSource(
+        relative_path="Abu_Bakr_Ash-Shaatree_128kbps",
+        reciter_name="Abu Bakr Ash-Shatri",
+    ),
+    "hudhaify": VerseRecitationSource(
+        relative_path="Hudhaify_128kbps",
+        reciter_name="Ali Al-Hudhaify",
+    ),
+    "juhany": VerseRecitationSource(
+        relative_path="Abdullaah_3awwaad_Al-Juhaynee_128kbps",
+        reciter_name="Abdullah Awad Al-Juhany",
     ),
 }
 WINDOWS_ARABIC_FONT_FALLBACKS = [
@@ -484,20 +524,8 @@ class FacebookChapterAudioOverride:
     verse_durations: tuple[float, ...] = ()
 
 
-@dataclass(frozen=True)
-class TikTokUploadOptions:
-    client_config_file: Path
-    token_file: Path
-    privacy_level: str = DEFAULT_TIKTOK_PRIVACY_LEVEL
-    disable_comment: bool = False
-    disable_duet: bool = False
-    disable_stitch: bool = False
 
 
-@dataclass(frozen=True)
-class FacebookUploadOptions:
-    config_file: Path
-    video_state: str = DEFAULT_FACEBOOK_VIDEO_STATE
 
 
 def parse_args() -> argparse.Namespace:
@@ -572,36 +600,6 @@ def parse_args() -> argparse.Namespace:
         help="Default language metadata for YouTube uploads.",
     )
     parser.add_argument("--youtube-made-for-kids", action="store_true", help="Mark uploaded videos as made for kids.")
-    parser.add_argument("--facebook-upload", action="store_true", help="Upload rendered videos to a Facebook Page Reel after each successful render.")
-    parser.add_argument(
-        "--facebook-config-file",
-        help="Path to the Facebook Page config JSON file. Defaults to .secrets/facebook-page-config.json or FACEBOOK_PAGE_CONFIG_FILE.",
-    )
-    parser.add_argument(
-        "--facebook-video-state",
-        choices=FACEBOOK_VIDEO_STATE_CHOICES,
-        default=DEFAULT_FACEBOOK_VIDEO_STATE,
-        help="Publish state used for Facebook Page Reels. Defaults to PUBLISHED.",
-    )
-    parser.add_argument("--tiktok-upload", action="store_true", help="Upload rendered videos to TikTok after each successful render.")
-    parser.add_argument("--tiktok-auth-only", action="store_true", help="Run the one-time TikTok OAuth flow, save the token file, and exit.")
-    parser.add_argument(
-        "--tiktok-client-config-file",
-        help="Path to the TikTok client config JSON file. Defaults to .secrets/tiktok-client-config.json or TIKTOK_CLIENT_CONFIG_FILE.",
-    )
-    parser.add_argument(
-        "--tiktok-token-file",
-        help="Path to the stored TikTok OAuth token JSON file. Defaults to .secrets/tiktok-token.json or TIKTOK_TOKEN_FILE.",
-    )
-    parser.add_argument(
-        "--tiktok-privacy-level",
-        choices=TIKTOK_PRIVACY_LEVEL_CHOICES,
-        default=DEFAULT_TIKTOK_PRIVACY_LEVEL,
-        help="TikTok privacy level for direct posts. Unaudited TikTok apps can only post to private accounts.",
-    )
-    parser.add_argument("--tiktok-disable-comment", action="store_true", help="Disable comments on TikTok uploads.")
-    parser.add_argument("--tiktok-disable-duet", action="store_true", help="Disable duets on TikTok uploads.")
-    parser.add_argument("--tiktok-disable-stitch", action="store_true", help="Disable stitch on TikTok uploads.")
     return parser.parse_args()
 
 
@@ -1233,38 +1231,8 @@ def resolve_youtube_upload_options_for_index(
     )
 
 
-def build_tiktok_upload_options(args: argparse.Namespace, base_dir: Path) -> TikTokUploadOptions:
-    client_config_raw = (
-        normalize_optional_text(args.tiktok_client_config_file)
-        or normalize_optional_text(os.getenv("TIKTOK_CLIENT_CONFIG_FILE"))
-        or DEFAULT_TIKTOK_CLIENT_CONFIG_FILE
-    )
-    token_file_raw = (
-        normalize_optional_text(args.tiktok_token_file)
-        or normalize_optional_text(os.getenv("TIKTOK_TOKEN_FILE"))
-        or DEFAULT_TIKTOK_TOKEN_FILE
-    )
-
-    return TikTokUploadOptions(
-        client_config_file=resolve_runtime_path(base_dir, client_config_raw),
-        token_file=resolve_runtime_path(base_dir, token_file_raw),
-        privacy_level=require_non_empty_text(args.tiktok_privacy_level, "tiktok-privacy-level"),
-        disable_comment=bool(args.tiktok_disable_comment),
-        disable_duet=bool(args.tiktok_disable_duet),
-        disable_stitch=bool(args.tiktok_disable_stitch),
-    )
 
 
-def build_facebook_upload_options(args: argparse.Namespace, base_dir: Path) -> FacebookUploadOptions:
-    config_raw = (
-        normalize_optional_text(args.facebook_config_file)
-        or normalize_optional_text(os.getenv("FACEBOOK_PAGE_CONFIG_FILE"))
-        or DEFAULT_FACEBOOK_PAGE_CONFIG_FILE
-    )
-    return FacebookUploadOptions(
-        config_file=resolve_runtime_path(base_dir, config_raw),
-        video_state=require_non_empty_text(args.facebook_video_state, "facebook-video-state"),
-    )
 
 
 def parse_facebook_chapter_audio_overrides(
@@ -1376,38 +1344,6 @@ def load_tiktok_client_config(config_path: Path) -> TikTokClientConfig:
     )
 
 
-def load_facebook_page_config(config_path: Path) -> FacebookPageConfig:
-    if not config_path.exists():
-        raise FileNotFoundError(
-            f"Facebook Page config file not found: {config_path}. "
-            "Create a JSON file with a page_access_token from the Meta Pages API."
-        )
-
-    try:
-        payload = json.loads(config_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        raise RuntimeError(f"Failed to read Facebook Page config from {config_path}: {error}") from error
-
-    if not isinstance(payload, dict):
-        raise RuntimeError(f"Facebook Page config at {config_path} must be a JSON object.")
-
-    api_version = normalize_optional_text(payload.get("api_version")) or DEFAULT_FACEBOOK_API_VERSION
-    if not re.fullmatch(r"v\d+\.\d+", api_version):
-        raise RuntimeError("Facebook api_version must look like v24.0.")
-
-    audio_base_url = normalize_optional_text(payload.get("audio_base_url")) or VERSES_AUDIO_BASE_URL
-    chapter_audio_overrides = parse_facebook_chapter_audio_overrides(config_path.parent, payload.get("chapter_audio_overrides"))
-
-    return FacebookPageConfig(
-        page_access_token=require_non_empty_text(payload.get("page_access_token", ""), "facebook page_access_token"),
-        api_version=api_version,
-        reciter_key=normalize_optional_text(payload.get("reciter_key")),
-        recitation_relative_path=normalize_optional_text(payload.get("recitation_relative_path")),
-        reciter_name=normalize_optional_text(payload.get("reciter_name")),
-        audio_base_url=audio_base_url,
-        chapter_audio_overrides=chapter_audio_overrides,
-        credit_lines=parse_string_lines(payload.get("credit_lines"), context="facebook credit_lines"),
-    )
 
 
 def request_json(
@@ -1744,27 +1680,6 @@ def require_facebook_api_success(payload: dict[str, object], context: str) -> di
     return payload
 
 
-def upload_video_file_to_facebook(upload_url: str, page_access_token: str, video_path: Path) -> None:
-    video_size = video_path.stat().st_size
-    if video_size <= 0:
-        raise RuntimeError("Facebook upload failed: video file is empty.")
-
-    payload = request_json(
-        upload_url,
-        method="POST",
-        headers={
-            "Authorization": f"OAuth {page_access_token}",
-            "offset": "0",
-            "file_size": str(video_size),
-            "Content-Type": "application/octet-stream",
-            "Content-Length": str(video_size),
-        },
-        data=video_path.read_bytes(),
-        timeout=300,
-    )
-    payload = require_facebook_api_success(payload, "video transfer")
-    if payload and payload.get("success") is False:
-        raise RuntimeError("Facebook video transfer failed.")
 
 
 def fetch_facebook_reel_status(page_config: FacebookPageConfig, video_id: str) -> dict[str, object]:
@@ -1826,91 +1741,8 @@ def poll_facebook_reel_status(page_config: FacebookPageConfig, video_id: str) ->
     return latest_status
 
 
-def upload_video_to_facebook(
-    *,
-    video_path: Path,
-    config: RenderConfig,
-    options: FacebookUploadOptions,
-    page_config: FacebookPageConfig | None = None,
-) -> dict[str, str]:
-    page_config = page_config or load_facebook_page_config(options.config_file)
-    create_payload = request_json(
-        build_facebook_graph_url(
-            page_config.api_version,
-            "me/video_reels",
-            {
-                "access_token": page_config.page_access_token,
-                "upload_phase": "start",
-            },
-        ),
-        method="POST",
-        timeout=60,
-    )
-    create_payload = require_facebook_api_success(create_payload, "create reel")
-    video_id = require_non_empty_text(create_payload.get("video_id", ""), "facebook video_id")
-    upload_url = require_non_empty_text(create_payload.get("upload_url", ""), "facebook upload_url")
-
-    upload_video_file_to_facebook(upload_url, page_config.page_access_token, video_path)
-
-    publish_payload = request_json(
-        build_facebook_graph_url(
-            page_config.api_version,
-            "me/video_reels",
-            {
-                "access_token": page_config.page_access_token,
-                "video_id": video_id,
-                "upload_phase": "finish",
-                "video_state": options.video_state,
-                "description": build_facebook_reel_description(config, page_config),
-                "title": build_facebook_reel_title(config),
-            },
-        ),
-        method="POST",
-        timeout=60,
-    )
-    publish_payload = require_facebook_api_success(publish_payload, "publish reel")
-    if publish_payload.get("success") is False:
-        raise RuntimeError("Facebook publish reel failed.")
-
-    status_payload = poll_facebook_reel_status(page_config, video_id)
-    status_summary = summarize_facebook_reel_status(status_payload) if status_payload else options.video_state
-    return {
-        "video_id": video_id,
-        "status": status_summary,
-        "video_state": options.video_state,
-        "watch_url": "",
-    }
 
 
-def upload_video_file_to_tiktok(upload_url: str, video_path: Path) -> None:
-    video_size = video_path.stat().st_size
-    if video_size <= 0:
-        raise RuntimeError("TikTok upload failed: video file is empty.")
-    if video_size > TIKTOK_SIMPLE_UPLOAD_MAX_BYTES:
-        raise RuntimeError(
-            "TikTok upload failed: generated video is larger than the current direct-upload limit "
-            "supported by this script (64 MB)."
-        )
-
-    content_type = mimetypes.guess_type(str(video_path))[0] or "video/mp4"
-    if content_type not in {"video/mp4", "video/quicktime", "video/webm"}:
-        content_type = "video/mp4"
-
-    request = Request(
-        upload_url,
-        data=video_path.read_bytes(),
-        headers={
-            "Content-Type": content_type,
-            "Content-Length": str(video_size),
-            "Content-Range": f"bytes 0-{video_size - 1}/{video_size}",
-        },
-        method="PUT",
-    )
-    try:
-        with urlopen(request, timeout=300):
-            return
-    except (OSError, URLError) as error:
-        raise RuntimeError(f"TikTok video transfer failed: {error}") from error
 
 
 def fetch_tiktok_publish_status(access_token: str, publish_id: str) -> dict[str, object]:
@@ -1936,63 +1768,6 @@ def poll_tiktok_publish_status(access_token: str, publish_id: str) -> dict[str, 
     return latest_status
 
 
-def upload_video_to_tiktok(
-    *,
-    video_path: Path,
-    config: RenderConfig,
-    options: TikTokUploadOptions,
-    interactive_auth: bool,
-) -> dict[str, str]:
-    token_payload = get_tiktok_credentials(options, interactive=interactive_auth)
-    access_token = require_non_empty_text(token_payload.get("access_token", ""), "tiktok access_token")
-    creator_info = query_tiktok_creator_info(access_token)
-    privacy_level = resolve_tiktok_privacy_level(options.privacy_level, creator_info)
-    disable_comment = options.disable_comment or bool(creator_info.get("comment_disabled"))
-    disable_duet = options.disable_duet or bool(creator_info.get("duet_disabled"))
-    disable_stitch = options.disable_stitch or bool(creator_info.get("stitch_disabled"))
-
-    init_payload = post_json(
-        TIKTOK_DIRECT_POST_INIT_URL,
-        {
-            "post_info": {
-                "title": build_tiktok_caption(config),
-                "privacy_level": privacy_level,
-                "disable_comment": disable_comment,
-                "disable_duet": disable_duet,
-                "disable_stitch": disable_stitch,
-            },
-            "source_info": {
-                "source": "FILE_UPLOAD",
-                "video_size": video_path.stat().st_size,
-                "chunk_size": video_path.stat().st_size,
-                "total_chunk_count": 1,
-            },
-        },
-        headers={"Authorization": f"Bearer {access_token}"},
-    )
-    init_data = require_tiktok_api_success(init_payload, "direct post init")
-    publish_id = require_non_empty_text(init_data.get("publish_id", ""), "tiktok publish_id")
-    upload_url = require_non_empty_text(init_data.get("upload_url", ""), "tiktok upload_url")
-    upload_video_file_to_tiktok(upload_url, video_path)
-
-    status_payload = poll_tiktok_publish_status(access_token, publish_id)
-    status_value = normalize_optional_text(status_payload.get("status")) or "PROCESSING"
-    public_post_ids = status_payload.get("publicaly_available_post_id")
-    post_id = ""
-    if isinstance(public_post_ids, list) and public_post_ids:
-        post_id = str(public_post_ids[0]).strip()
-    creator_username = normalize_optional_text(creator_info.get("creator_username")) or ""
-    watch_url = ""
-    if creator_username and post_id:
-        watch_url = f"https://www.tiktok.com/@{creator_username}/video/{post_id}"
-
-    return {
-        "publish_id": publish_id,
-        "status": status_value,
-        "privacy_level": privacy_level,
-        "post_id": post_id,
-        "watch_url": watch_url,
-    }
 
 
 def import_youtube_client_modules() -> tuple[object, object, object, object, object]:
@@ -3013,23 +2788,14 @@ def chapter_meets_minimum_verses(chapter: dict[str, object], minimum_verses: int
 
 
 def fetch_auto_reciters() -> list[AutoReciter]:
-    payload = fetch_quran_api_json("/resources/recitations")
-    raw_recitations = payload.get("recitations")
-    if not isinstance(raw_recitations, list) or not raw_recitations:
-        raise RuntimeError("Quran API did not return any recitations.")
-
     reciters: list[AutoReciter] = []
-    for item in raw_recitations:
-        if not isinstance(item, dict):
-            continue
-        identifier = item.get("id")
-        reciter_name = normalize_optional_text(item.get("reciter_name") or item.get("name"))
-        if identifier is None or reciter_name is None:
-            continue
-        reciters.append(AutoReciter(recitation_id=int(identifier), reciter_name=reciter_name))
-
-    if not reciters:
-        raise RuntimeError("No usable reciters were returned by Quran API.")
+    for key, source in BUILTIN_VERSE_RECITATIONS.items():
+        reciters.append(AutoReciter(
+            reciter_name=source.reciter_name,
+            recitation_id=None,
+            recitation_relative_path=source.relative_path,
+            audio_base_url=VERSES_AUDIO_BASE_URL,
+        ))
     return reciters
 
 
@@ -3624,21 +3390,8 @@ def collect_auto_verses(
             raise RuntimeError(f"Could not find audio URL for {verse_key} with reciter {reciter.reciter_name}.")
 
         arabic = clean_quranic_text(require_non_empty_text(verse_payload.get("text_uthmani", ""), f"text_uthmani for {verse_key}"))
-        word_count = len(arabic.split())
-        if word_count > 16:
-            if selected_verses and total_duration >= minimum_duration:
-                break
-            current_ayah += 1
-            continue
-
         translation = extract_translation_text(verse_payload) or translation_map.get(verse_key, "")
-        try:
-            audio_path = local_audio_path or download_asset(audio_url, cache_dir / "audio", "audio")
-        except Exception as error:  # noqa: BLE001
-            if selected_verses and total_duration >= minimum_duration:
-                break
-            current_ayah += 1
-            continue
+        audio_path = local_audio_path or download_asset(audio_url, cache_dir / "audio", "audio")
         duration = probe_duration(audio_path, ffprobe_command)
 
         if selected_verses and (total_duration + duration) > target_seconds:
@@ -5837,29 +5590,14 @@ def main() -> int:
     configs: list[RenderConfig] = []
     base_dir = Path.cwd()
     youtube_options = None
-    facebook_options = None
-    facebook_page_config = None
-    tiktok_options = None
     try:
         if args.youtube_upload or args.youtube_auth_only:
             youtube_options = build_youtube_upload_options(args, base_dir)
-        if args.facebook_upload:
-            facebook_options = build_facebook_upload_options(args, base_dir)
-            facebook_page_config = load_facebook_page_config(facebook_options.config_file)
-        if args.tiktok_upload or args.tiktok_auth_only:
-            tiktok_options = build_tiktok_upload_options(args, base_dir)
-
         if args.youtube_auth_only:
             if youtube_options is None:
                 raise RuntimeError("YouTube upload options could not be built.")
             get_youtube_credentials(youtube_options, interactive=True)
             print(f"YouTube token saved to {youtube_options.token_file}")
-            return 0
-        if args.tiktok_auth_only:
-            if tiktok_options is None:
-                raise RuntimeError("TikTok upload options could not be built.")
-            get_tiktok_credentials(tiktok_options, interactive=True)
-            print(f"TikTok token saved to {tiktok_options.token_file}")
             return 0
 
         use_auto_mode = args.auto or not args.config
