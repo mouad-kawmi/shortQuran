@@ -4106,8 +4106,8 @@ def choose_arabic_words_per_line(text: str, *, is_cinematic: bool) -> int:
     if word_count <= 5:
         return 5
     if word_count <= 10:
-        return 4
-    return 4
+        return 5
+    return 5
 
 
 def choose_arabic_line_unit_budget(text: str, *, is_cinematic: bool) -> int:
@@ -4120,12 +4120,12 @@ def choose_arabic_line_unit_budget(text: str, *, is_cinematic: bool) -> int:
         return 19
 
     if word_count <= 4:
-        return 22
+        return 26
     if word_count <= 8:
-        return 19
+        return 24
     if word_count <= 12:
-        return 17
-    return 15
+        return 22
+    return 20
 
 
 def measure_arabic_line_units(text: str) -> int:
