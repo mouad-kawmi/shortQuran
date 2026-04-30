@@ -5590,6 +5590,9 @@ def main() -> int:
     configs: list[RenderConfig] = []
     base_dir = Path.cwd()
     youtube_options = None
+    facebook_options = None
+    facebook_page_config = None
+    tiktok_options = None
     try:
         if args.youtube_upload or args.youtube_auth_only:
             youtube_options = build_youtube_upload_options(args, base_dir)
