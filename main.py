@@ -30,6 +30,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 VIDEO_WIDTH = 1080
 VIDEO_HEIGHT = 1920
+IS_LANDSCAPE = False
+IS_WHOLE_SURAH = False
 DEFAULT_FPS = 30
 DEFAULT_TARGET_DURATION = 60.0
 AUTO_MIN_DURATION = 45.0
@@ -50,16 +52,31 @@ AUTO_STYLE_PRESETS = (
     "minimalist_info",
 )
 AUTO_TITLE_HOOKS = {
-    "calm": "Calm Quran Recitation",
-    "reflect": "Verses to Reflect On",
-    "heart": "A Recitation for the Heart",
-    "reminder": "A Quran Reminder for Today",
+    "calm": "تلاوة هادئة تريح الأعصاب",
+    "reflect": "تلاوة خاشعة تريح القلب",
+    "heart": "آيات تلامس القلوب",
+    "reminder": "تلاوة هادئة تشرح الصدر",
 }
 AUTO_TITLE_TEMPLATES = {
-    "hook_reference": "{hook} | {chapter_name} {verse_reference}",
-    "hook_reciter": "{hook} | {chapter_name} | {reciter_name}",
-    "surah_focus": "{chapter_name} | {hook}",
-    "ayah_focus": "{chapter_name} | Ayat {verse_range_label} | {hook}",
+    "hook_reference": "{hook} | سورة {chapter_name} | {reciter_name}",
+    "hook_reciter": "{hook} | سورة {chapter_name} | بصوت {reciter_name}",
+    "surah_focus": "سورة {chapter_name} كاملة | {hook} | {reciter_name}",
+    "ayah_focus": "{hook} | سورة {chapter_name} الآيات {verse_range_label} | {reciter_name}",
+}
+
+ARABIC_RECITER_NAMES = {
+    "Mishari Rashid al-`Afasy": "مشاري العفاسي",
+    "Abdul Basit Abdus Samad": "عبد الباسط عبد الصمد",
+    "Mahmoud Khalil Al-Husary": "محمود خليل الحصري",
+    "Mohamed Siddiq El-Minshawi": "محمد صديق المنشاوي",
+    "Abdurrahman As-Sudais": "عبد الرحمن السديس",
+    "Saud Al-Shuraim": "سعود الشريم",
+    "Maher Al Muaiqly": "ماهر المعيقلي",
+    "Yasser Al-Dosari": "ياسر الدوسري",
+    "Ahmed ibn Ali al-Ajamy": "أحمد بن علي العجمي",
+    "Abu Bakr Ash-Shatri": "أبو بكر الشاطري",
+    "Ali Al-Hudhaify": "علي الحذيفي",
+    "Abdullah Awad Al-Juhany": "عبد الله الجهني",
 }
 AUTO_DESCRIPTION_HOOKS = {
     "pause": "Pause for a minute and listen to these verses with focus.",
@@ -532,6 +549,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate a Quran short video from audio, text, and optional background media.")
     parser.add_argument("--config", help="Path to a JSON config file.")
     parser.add_argument("--auto", action="store_true", help="Generate a fully automatic Quran short without a config file.")
+    parser.add_argument("--landscape", action="store_true", help="Generate video in landscape format (1920x1080).")
+    parser.add_argument("--whole-surah", action="store_true", help="Generate a video for the whole surah without clipping.")
     parser.add_argument("--count", type=int, default=DEFAULT_AUTO_COUNT, help="How many automatic videos to generate.")
     parser.add_argument(
         "--target-seconds",
@@ -1851,7 +1870,7 @@ def build_youtube_title(config: RenderConfig) -> str:
         base_title = preferred_title
 
     shorts_suffix = " #Shorts"
-    if "#shorts" not in base_title.lower() and len(base_title) + len(shorts_suffix) <= 100:
+    if not globals().get('IS_LANDSCAPE') and "#shorts" not in base_title.lower() and len(base_title) + len(shorts_suffix) <= 100:
         base_title += shorts_suffix
     return base_title[:100].strip()
 
@@ -1947,6 +1966,59 @@ def build_youtube_description(config: RenderConfig) -> str:
     return "\n".join(lines).strip()
 
 
+def generate_youtube_thumbnail(config: RenderConfig) -> Path | None:
+    thumbnail_path = config.output_path.with_suffix(".jpg")
+    if thumbnail_path.exists():
+        return thumbnail_path
+
+    bg_path = config.background_path
+    if not bg_path or not bg_path.exists():
+        return None
+
+    arabic_surah = config.arabic_surah_name or config.surah_name
+    arabic_reciter = ARABIC_RECITER_NAMES.get(config.reciter_name, config.reciter_name) if config.reciter_name else ""
+    
+    ass_content = f"""[Script Info]
+ScriptType: v4.00+
+PlayResX: 1920
+PlayResY: 1080
+WrapStyle: 1
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: SurahName,Noto Naskh Arabic,180,&Hffffff,&Hffffff,&Haa000000,&H66000000,1,0,0,0,100,100,0,0,1,0,18,5,0,0,250,1
+Style: ReciterName,Noto Naskh Arabic,90,&Hffffff,&Hffffff,&Haa000000,&H66000000,1,0,0,0,100,100,0,0,1,0,12,5,0,0,650,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,0:00:05.00,SurahName,,0,0,0,,سورة {arabic_surah}
+Dialogue: 0,0:00:00.00,0:00:05.00,ReciterName,,0,0,0,,بصوت {arabic_reciter}
+"""
+    ass_path = config.output_path.parent / f"{config.output_path.stem}_thumb.ass"
+    ass_path.write_text(ass_content, encoding="utf-8-sig")
+
+    ass_path_str = str(ass_path).replace('\\\\', '/').replace(':', '\\\\:')
+    
+    cmd = [
+        "ffmpeg", "-y", "-i", str(bg_path),
+        "-vframes", "1",
+        "-vf", f"scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,ass='{ass_path_str}'",
+        str(thumbnail_path)
+    ]
+    import subprocess
+    try:
+        subprocess.run(cmd, check=True, capture_output=True)
+    except subprocess.CalledProcessError:
+        pass
+        
+    try:
+        ass_path.unlink(missing_ok=True)
+    except Exception:
+        pass
+        
+    return thumbnail_path if thumbnail_path.exists() else None
+
+
 def upload_video_to_youtube(
     *,
     video_path: Path,
@@ -1984,6 +2056,21 @@ def upload_video_to_youtube(
         _, response = request.next_chunk()
 
     video_id = str(response["id"])
+
+    print(f"Generating and uploading custom thumbnail for video {video_id}...")
+    try:
+        thumbnail_path = generate_youtube_thumbnail(config)
+        if thumbnail_path and thumbnail_path.exists():
+            youtube.thumbnails().set(
+                videoId=video_id,
+                media_body=MediaFileUpload(str(thumbnail_path), mimetype='image/jpeg', chunksize=-1, resumable=True)
+            ).execute()
+            print("Custom thumbnail uploaded successfully!")
+        else:
+            print("Failed to generate custom thumbnail.")
+    except Exception as e:
+        print(f"Error uploading thumbnail: {e}")
+
     return {
         "video_id": video_id,
         "watch_url": f"https://www.youtube.com/watch?v={video_id}",
@@ -2925,7 +3012,8 @@ def load_auto_reciters_from_library(library_path: Path) -> list[AutoReciter]:
 def fetch_pexels_nature_video(cache_dir: Path, pexels_api_key: str) -> Path | None:
     """Fetch a random nature video from Pexels API and cache it locally."""
     query = random.choice(PEXELS_NATURE_QUERIES)
-    url = f"{PEXELS_API_BASE_URL}/search?query={query.replace(' ', '+')}&per_page=15&orientation=portrait"
+    orientation = 'landscape' if globals().get('IS_LANDSCAPE') else 'portrait'
+    url = f"{PEXELS_API_BASE_URL}/search?query={query.replace(' ', '+')}&per_page=15&orientation={orientation}"
     try:
         request = Request(url, headers={"Authorization": pexels_api_key, "User-Agent": "shortQuran/1.0"})
         with urlopen(request, timeout=30) as response:
@@ -3066,7 +3154,11 @@ def finalize_showcase_render_config(
     font_file = resolve_default_arabic_font_file(base_dir, cache_dir)
     latin_font_file = download_asset(DEFAULT_LATIN_FONT_URL, cache_dir / "font", "font")
 
-    title_text = f"{arabic_surah_name} | {chapter_name} | {reciter.reciter_name}"
+    import random
+    hook_template_key = random.choice(list(AUTO_TITLE_HOOKS))
+    hook_text = AUTO_TITLE_HOOKS[hook_template_key]
+    arabic_reciter = ARABIC_RECITER_NAMES.get(reciter.reciter_name, reciter.reciter_name)
+    title_text = f"{hook_text} | سورة {arabic_surah_name} كاملة | {arabic_reciter}"
     history_entry = {
         "created_at": datetime.now(timezone.utc).isoformat(),
         "combo_key": combo_key,
@@ -3352,7 +3444,12 @@ def collect_auto_verses(
     minimum_duration = min(AUTO_MIN_DURATION, max(10.0, target_seconds * 0.68))
     estimated_verses_needed = max(3, int(target_seconds // 6) + 1)
     max_start = max(1, verses_count - estimated_verses_needed + 1)
-    start_ayah = random.randint(1, max_start)
+    
+    if globals().get('IS_WHOLE_SURAH'):
+        start_ayah = 1
+    else:
+        start_ayah = random.randint(1, max_start)
+        
     current_ayah = start_ayah
     selected_verses: list[AutoVerse] = []
     total_duration = 0.0
@@ -3394,7 +3491,7 @@ def collect_auto_verses(
         audio_path = local_audio_path or download_asset(audio_url, cache_dir / "audio", "audio")
         duration = probe_duration(audio_path, ffprobe_command)
 
-        if selected_verses and (total_duration + duration) > target_seconds:
+        if not globals().get('IS_WHOLE_SURAH') and selected_verses and (total_duration + duration) > target_seconds:
             break
 
         selected_verses.append(
@@ -3410,7 +3507,7 @@ def collect_auto_verses(
         total_duration += duration
         current_ayah += 1
 
-        if total_duration >= target_seconds:
+        if not globals().get('IS_WHOLE_SURAH') and total_duration >= target_seconds:
             break
 
     if not selected_verses:
@@ -3490,6 +3587,12 @@ def collect_auto_whole_surah_verses(
             audio_path=whole_surah_audio_path,
             duration=basmala_duration,
         )
+
+    if globals().get('IS_WHOLE_SURAH'):
+        clipped_verses = quran_verses[:]
+        if basmala_verse is not None:
+            clipped_verses.insert(0, basmala_verse)
+        return clipped_verses, whole_surah_audio_path, 0.0, total_duration
 
     minimum_duration = min(AUTO_MIN_DURATION, max(10.0, target_seconds * 0.68))
     start_offsets: list[float] = []
@@ -3587,6 +3690,7 @@ def finalize_auto_render_config(
     history_entries: list[dict[str, object]],
     chapter_number: int,
     chapter_name: str,
+    arabic_surah_name: str,
     reciter: AutoReciter,
     selected_verses: list[AutoVerse],
     selected_target_seconds: float,
@@ -3648,7 +3752,7 @@ def finalize_auto_render_config(
             audio_output = source_audio_path
 
     audio_duration = probe_duration(audio_output, ffprobe_command)
-    if audio_duration > (selected_target_seconds + 0.05):
+    if not globals().get('IS_WHOLE_SURAH') and audio_duration > (selected_target_seconds + 0.05):
         trimmed_output = cache_dir / "compiled_audio" / f"{audio_output.stem}-trim{audio_output.suffix}"
         trim_audio_segment(
             audio_output,
@@ -3692,11 +3796,11 @@ def finalize_auto_render_config(
     latin_font_file = download_asset(DEFAULT_LATIN_FONT_URL, cache_dir / "latin_font", "latin_font")
     style_preset = choose_auto_style_preset(history_entries)
     metadata_keys, title_text = build_auto_title(
-        chapter_name=chapter_name,
+        chapter_name=arabic_surah_name,
         verse_reference=verse_reference,
         verse_start=verse_start,
         verse_end=verse_end,
-        reciter_name=reciter.reciter_name,
+        reciter_name=ARABIC_RECITER_NAMES.get(reciter.reciter_name, reciter.reciter_name),
         history_entries=history_entries,
     )
     output_path = build_auto_output_path(
@@ -3933,6 +4037,7 @@ def build_auto_render_config(
                     history_entries=history_entries,
                     chapter_number=chapter_number,
                     chapter_name=chapter_name,
+                    arabic_surah_name=arabic_surah_name,
                     reciter=reciter,
                     selected_verses=selected_verses,
                     selected_target_seconds=selected_target_seconds,
@@ -3962,6 +4067,7 @@ def build_auto_render_config(
                 history_entries=history_entries,
                 chapter_number=chapter_number,
                 chapter_name=chapter_name,
+                arabic_surah_name=arabic_surah_name,
                 reciter=reciter,
                 selected_verses=selected_verses,
                 selected_target_seconds=selected_target_seconds,
@@ -4199,8 +4305,12 @@ def resolve_text_stack_positions(
     preferred_arabic_top: float,
     preferred_translation_top: float,
 ) -> tuple[int, int]:
-    top_margin = 260 if is_cinematic else 170
-    bottom_margin = 250 if is_cinematic else 160
+    if globals().get('IS_LANDSCAPE'):
+        top_margin = 150 if is_cinematic else 100
+        bottom_margin = 150 if is_cinematic else 100
+    else:
+        top_margin = 260 if is_cinematic else 170
+        bottom_margin = 250 if is_cinematic else 160
 
     if translation_line_count <= 0:
         max_arabic_top = VIDEO_HEIGHT - bottom_margin - arabic_block_height
@@ -4439,7 +4549,10 @@ def create_arabic_ass_file(
     is_cinematic = is_cinematic_style(config.style_preset)
     cinematic_variant = get_cinematic_variant(config.style_preset)
     cinematic_arabic_offset = 100 if cinematic_variant == "compact" else 60 if cinematic_variant == "spacious" else 80
-    cinematic_translation_top = 980 if cinematic_variant == "compact" else 1020 if cinematic_variant == "spacious" else 1000
+    if globals().get('IS_LANDSCAPE'):
+        cinematic_translation_top = 800 if cinematic_variant == "compact" else 840 if cinematic_variant == "spacious" else 820
+    else:
+        cinematic_translation_top = 980 if cinematic_variant == "compact" else 1020 if cinematic_variant == "spacious" else 1000
 
     use_timed_segment_overlays = bool(timed_segment_assets) and not config.prefer_static_text_overlay
     use_segment_overlays = bool(segment_assets) and not config.prefer_static_text_overlay
@@ -4526,7 +4639,7 @@ def create_arabic_ass_file(
                 translation_line_spacing=translation_line_spacing,
                 is_cinematic=is_cinematic,
                 preferred_arabic_top=preferred_arabic_top,
-                preferred_translation_top=cinematic_translation_top if is_cinematic else VIDEO_HEIGHT - 500,
+                preferred_translation_top=cinematic_translation_top if is_cinematic else VIDEO_HEIGHT - (250 if globals().get('IS_LANDSCAPE') else 500),
             )
             dialogues.append(
                 build_ass_dialogue(
@@ -4569,7 +4682,7 @@ def create_arabic_ass_file(
                 translation_line_spacing=translation_line_spacing,
                 is_cinematic=is_cinematic,
                 preferred_arabic_top=preferred_arabic_top,
-                preferred_translation_top=cinematic_translation_top if is_cinematic else VIDEO_HEIGHT - 500,
+                preferred_translation_top=cinematic_translation_top if is_cinematic else VIDEO_HEIGHT - (250 if globals().get('IS_LANDSCAPE') else 500),
             )
             dialogues.append(
                 build_ass_dialogue(
@@ -4602,7 +4715,7 @@ def create_arabic_ass_file(
                 translation_line_spacing=translation_line_spacing,
                 is_cinematic=is_cinematic,
                 preferred_arabic_top=preferred_verse_top,
-                preferred_translation_top=cinematic_translation_top if is_cinematic else VIDEO_HEIGHT - 470,
+                preferred_translation_top=cinematic_translation_top if is_cinematic else VIDEO_HEIGHT - (220 if globals().get('IS_LANDSCAPE') else 470),
             )
             dialogues.append(
                 build_ass_dialogue(
@@ -4997,7 +5110,10 @@ def build_filter_complex(
     cinematic_meta_top = 78 if cinematic_variant == "compact" else 112 if cinematic_variant == "spacious" else 92
     cinematic_meta_font_size = 26 if cinematic_variant == "compact" else 30 if cinematic_variant == "spacious" else 28
     cinematic_arabic_offset = 100 if cinematic_variant == "compact" else 60 if cinematic_variant == "spacious" else 80
-    cinematic_translation_top = 980 if cinematic_variant == "compact" else 1020 if cinematic_variant == "spacious" else 1000
+    if globals().get('IS_LANDSCAPE'):
+        cinematic_translation_top = 800 if cinematic_variant == "compact" else 840 if cinematic_variant == "spacious" else 820
+    else:
+        cinematic_translation_top = 980 if cinematic_variant == "compact" else 1020 if cinematic_variant == "spacious" else 1000
     cinematic_image_blur = 4 if cinematic_variant == "compact" else 2 if cinematic_variant == "spacious" else 3
     cinematic_video_blur = 3 if cinematic_variant == "compact" else 1 if cinematic_variant == "spacious" else 2
     cinematic_overlay_alpha = "0.30" if cinematic_variant == "compact" else "0.18" if cinematic_variant == "spacious" else "0.24"
@@ -5007,8 +5123,8 @@ def build_filter_complex(
     if background_kind == "image":
         if is_cinematic:
             base_filter = (
-                "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,"
-                "crop=1080:1920:"
+                f"[0:v]scale={VIDEO_WIDTH}:{VIDEO_HEIGHT}:force_original_aspect_ratio=increase,"
+                f"crop={VIDEO_WIDTH}:{VIDEO_HEIGHT}:"
                 "x='max(0,min(in_w-out_w,(in_w-out_w)/2+sin(n/90)*16))':"
                 "y='max(0,min(in_h-out_h,(in_h-out_h)/2+cos(n/120)*12))',"
                 "format=yuv420p,"
@@ -5020,8 +5136,8 @@ def build_filter_complex(
             )
         else:
             base_filter = (
-                "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,"
-                "crop=1080:1920,format=yuv420p,"
+                f"[0:v]scale={VIDEO_WIDTH}:{VIDEO_HEIGHT}:force_original_aspect_ratio=increase,"
+                f"crop={VIDEO_WIDTH}:{VIDEO_HEIGHT},format=yuv420p,"
                 "eq=saturation=1.12:brightness=-0.05,"
                 "drawbox=x=0:y=0:w=iw:h=ih:color=black@0.24:t=fill"
                 "[base]"
@@ -5029,8 +5145,8 @@ def build_filter_complex(
     elif background_kind == "video":
         if is_cinematic:
             base_filter = (
-                "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,"
-                "crop=1080:1920,format=yuv420p,"
+                f"[0:v]scale={VIDEO_WIDTH}:{VIDEO_HEIGHT}:force_original_aspect_ratio=increase,"
+                f"crop={VIDEO_WIDTH}:{VIDEO_HEIGHT},format=yuv420p,"
                 f"eq=saturation=1.02:brightness={cinematic_video_brightness},"
                 f"gblur=sigma={cinematic_video_blur},"
                 "vignette=PI/8,"
@@ -5039,8 +5155,8 @@ def build_filter_complex(
             )
         else:
             base_filter = (
-                "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,"
-                "crop=1080:1920,format=yuv420p,"
+                f"[0:v]scale={VIDEO_WIDTH}:{VIDEO_HEIGHT}:force_original_aspect_ratio=increase,"
+                f"crop={VIDEO_WIDTH}:{VIDEO_HEIGHT},format=yuv420p,"
                 "eq=saturation=1.10:brightness=-0.06,"
                 "drawbox=x=0:y=0:w=iw:h=ih:color=black@0.28:t=fill"
                 "[base]"
@@ -5092,16 +5208,21 @@ def build_filter_complex(
             ))
             previous_label = f"ar_surah_{len(ar_surah)-1}"
             
+        en_surah_base = (VIDEO_HEIGHT - 350) if globals().get('IS_LANDSCAPE') else 600
+        en_surah_offset = (VIDEO_HEIGHT - 280) if globals().get('IS_LANDSCAPE') else 680
+        ayah_base = (VIDEO_HEIGHT - 220) if globals().get('IS_LANDSCAPE') else 710
+        ayah_offset = (VIDEO_HEIGHT - 170) if globals().get('IS_LANDSCAPE') else 790
+
         filters.extend(build_text_block_filters(
             input_label=previous_label, output_prefix="en_surah", text_paths=text_assets["surah"],
-            top_y=680 if ar_surah else 600, font_size=75, font_color="0xf8fafc", box_color=None, alpha_expression=alpha_expression,
+            top_y=en_surah_offset if ar_surah else en_surah_base, font_size=75, font_color="0xf8fafc", box_color=None, alpha_expression=alpha_expression,
             font_file=config.latin_font_file or config.font_file, line_spacing=10, box_border=0, border_width=0, shadow_y=8, shadow_color="0x000000cc", shadow_x=0
         ))
         previous_label = "en_surah_0"
         
         filters.extend(build_text_block_filters(
             input_label=previous_label, output_prefix="ayah", text_paths=text_assets["ayah"],
-            top_y=790 if ar_surah else 710, font_size=45, font_color="0x90e0ef", box_color=None, alpha_expression=alpha_expression,
+            top_y=ayah_offset if ar_surah else ayah_base, font_size=45, font_color="0x90e0ef", box_color=None, alpha_expression=alpha_expression,
             font_file=config.latin_font_file or config.font_file, line_spacing=10, box_border=0, border_width=0, shadow_y=6, shadow_color="0x000000aa", shadow_x=0
         ))
         previous_label = "ayah_0"
@@ -5265,7 +5386,7 @@ def build_filter_complex(
                 translation_line_spacing=translation_line_spacing,
                 is_cinematic=is_cinematic,
                 preferred_arabic_top=preferred_arabic_top,
-                preferred_translation_top=cinematic_translation_top if is_cinematic else VIDEO_HEIGHT - 500,
+                preferred_translation_top=cinematic_translation_top if is_cinematic else VIDEO_HEIGHT - (250 if globals().get('IS_LANDSCAPE') else 500),
             )
             if arabic_ass_path is None:
                 arabic_prefix = f"timed_segment_arabic_layer_{index}"
@@ -5343,7 +5464,7 @@ def build_filter_complex(
                 translation_line_spacing=translation_line_spacing,
                 is_cinematic=is_cinematic,
                 preferred_arabic_top=preferred_arabic_top,
-                preferred_translation_top=cinematic_translation_top if is_cinematic else VIDEO_HEIGHT - 500,
+                preferred_translation_top=cinematic_translation_top if is_cinematic else VIDEO_HEIGHT - (250 if globals().get('IS_LANDSCAPE') else 500),
             )
             if arabic_ass_path is None:
                 arabic_prefix = f"segment_arabic_layer_{index}"
@@ -5411,7 +5532,7 @@ def build_filter_complex(
             translation_line_spacing=translation_line_spacing,
             is_cinematic=is_cinematic,
             preferred_arabic_top=preferred_verse_top,
-            preferred_translation_top=cinematic_translation_top if is_cinematic else VIDEO_HEIGHT - 470,
+            preferred_translation_top=cinematic_translation_top if is_cinematic else VIDEO_HEIGHT - (220 if globals().get('IS_LANDSCAPE') else 470),
         )
         if arabic_ass_path is None:
             filters.extend(
@@ -5537,10 +5658,13 @@ def build_command(config: RenderConfig, duration: float, temp_dir: Path, ffmpeg_
     audio_fade_start = max(0.0, duration - 0.8)
     audio_filter = f"afade=t=in:st=0:d=0.4,afade=t=out:st={audio_fade_start:.2f}:d=0.8"
 
+    filter_script_path = temp_dir / "filter_script.txt"
+    filter_script_path.write_text(filter_complex, encoding="utf-8")
+
     command.extend(
         [
-            "-filter_complex",
-            filter_complex,
+            "-filter_complex_script",
+            str(filter_script_path),
             "-map",
             "[vout]",
             "-map",
@@ -5586,7 +5710,15 @@ def render_video(config: RenderConfig) -> None:
 
 
 def main() -> int:
+    global IS_LANDSCAPE, IS_WHOLE_SURAH, VIDEO_WIDTH, VIDEO_HEIGHT
     args = parse_args()
+    if args.landscape:
+        IS_LANDSCAPE = True
+        VIDEO_WIDTH = 1920
+        VIDEO_HEIGHT = 1080
+    if args.whole_surah:
+        IS_WHOLE_SURAH = True
+
     configs: list[RenderConfig] = []
     base_dir = Path.cwd()
     youtube_options = None
