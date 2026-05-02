@@ -1690,11 +1690,33 @@ def build_facebook_reel_title(config: RenderConfig) -> str:
 
 
 def build_facebook_reel_description(config: RenderConfig, page_config: FacebookPageConfig) -> str:
-    lines = [build_youtube_description(config)]
+    lines = []
+    
+    # 1. Main Title / Hook
+    title = getattr(config, 'quran_arabic_name', None)
+    if not title:
+        # Fallback to standard
+        title = getattr(config, 'surah_name', '')
+    
+    # 2. Arabic Metadata
+    lines.append(f"سورة: {title}")
+    lines.append(f"الآيات: {config.verse_reference}")
+    
+    if config.reciter_name:
+        lines.append(f"القارئ: {config.reciter_name}")
+        
+    if config.verse_text:
+        lines.extend(["", config.verse_text.strip()])
+    
     facebook_credit_lines = merge_credit_lines(config.attribution_lines, config.facebook_credit_lines)
     if facebook_credit_lines:
         lines.extend(["", *facebook_credit_lines])
-    return "\n".join(lines)[:2200].strip()
+        
+    # Standard Hashtags per user request
+    hashtags = "#قرآن #تلاوة #تلاوات_خاشعة #قرآن_كريم #القرآن_الكريم #quran #islam #quranrecitation"
+    lines.extend(["", hashtags])
+    
+    return "\n".join(lines).strip()
 
 
 def build_facebook_graph_url(api_version: str, path: str, params: dict[str, object]) -> str:
