@@ -4398,8 +4398,8 @@ def resolve_text_stack_positions(
         top_margin = 150 if is_cinematic else 100
         bottom_margin = 150 if is_cinematic else 100
     else:
-        top_margin = 260 if is_cinematic else 170
-        bottom_margin = 250 if is_cinematic else 160
+        top_margin = 260 if is_cinematic else 200
+        bottom_margin = 320 if is_cinematic else 300
 
     if translation_line_count <= 0:
         max_arabic_top = VIDEO_HEIGHT - bottom_margin - arabic_block_height
