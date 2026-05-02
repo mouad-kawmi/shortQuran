@@ -1,0 +1,38 @@
+name: Find Instagram ID
+on:
+  workflow_dispatch:
+
+jobs:
+  find-id:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch Instagram Business ID
+        env:
+          PAGE_CONFIG: ${{ secrets.FACEBOOK_PAGE_CONFIG_JSON }}
+        run: |
+          # Extract access token and page id from the secret
+          ACCESS_TOKEN=$(echo "$PAGE_CONFIG" | jq -r '.access_token')
+          PAGE_ID=$(echo "$PAGE_CONFIG" | jq -r '.page_id')
+          
+          if [ -z "$ACCESS_TOKEN" ] || [ -z "$PAGE_ID" ]; then
+            echo "Error: FACEBOOK_PAGE_CONFIG_JSON secret is missing or invalid."
+            exit 1
+          fi
+          
+          echo "Connected to Facebook Page ID: $PAGE_ID"
+          echo "Querying for linked Instagram Business Account..."
+          
+          RESPONSE=$(curl -s "https://graph.facebook.com/v20.0/$PAGE_ID?fields=instagram_business_account&access_token=$ACCESS_TOKEN")
+          IG_ID=$(echo "$RESPONSE" | jq -r '.instagram_business_account.id')
+          
+          if [ "$IG_ID" != "null" ] && [ -n "$IG_ID" ]; then
+            echo "===================================================="
+            echo "SUCCESS! Your Instagram Business ID is:"
+            echo "$IG_ID"
+            echo "===================================================="
+            echo "Now add this ID to your FACEBOOK_PAGE_CONFIG_JSON secret like this:"
+            echo "{\"page_id\": \"$PAGE_ID\", \"access_token\": \"...\", \"instagram_business_id\": \"$IG_ID\"}"
+          else
+            echo "Could not find a linked Instagram Business account."
+            echo "Full Response from Meta API: $RESPONSE"
+          fi

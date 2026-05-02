@@ -85,7 +85,7 @@ jobs:
             EXTRA_PLATFORM_ARGS="$EXTRA_PLATFORM_ARGS --tiktok-upload --tiktok-client-config-file ./.secrets/tiktok-client-config.json --tiktok-token-file ./.secrets/tiktok-token.json"
           fi
           if [ -f ./.secrets/facebook-page-config.json ] ; then
-            EXTRA_PLATFORM_ARGS="$EXTRA_PLATFORM_ARGS --facebook-upload --facebook-page-config-file ./.secrets/facebook-page-config.json"
+            EXTRA_PLATFORM_ARGS="$EXTRA_PLATFORM_ARGS --facebook-upload --instagram-upload --facebook-page-config-file ./.secrets/facebook-page-config.json"
           fi
           python ./main.py \
             --auto \

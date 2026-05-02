@@ -526,6 +526,7 @@ class TikTokClientConfig:
 class FacebookPageConfig:
     page_id: str
     page_access_token: str
+    instagram_business_id: str | None = None
     api_version: str = DEFAULT_FACEBOOK_API_VERSION
     reciter_key: str | None = None
     recitation_relative_path: str | None = None
@@ -567,9 +568,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--youtube-upload", action="store_true", help="Upload rendered videos to YouTube after each successful render.")
     parser.add_argument("--youtube-auth-only", action="store_true", help="Run the one-time YouTube OAuth flow, save the token file, and exit.")
     
-    # Facebook upload options
+    # Facebook & Instagram upload options
     parser.add_argument("--facebook-upload", action="store_true", help="Upload rendered videos to Facebook Page after each successful render.")
-    parser.add_argument("--facebook-page-config-file", help=f"Path to the Facebook Page config JSON file. Defaults to {DEFAULT_FACEBOOK_PAGE_CONFIG_FILE}.")
+    parser.add_argument("--instagram-upload", action="store_true", help="Upload rendered videos to Instagram Reels after each successful render.")
+    parser.add_argument("--facebook-page-config-file", help=f"Path to the Facebook Page (and Instagram ID) config JSON file. Defaults to {DEFAULT_FACEBOOK_PAGE_CONFIG_FILE}.")
     
     # TikTok upload options
     parser.add_argument("--tiktok-upload", action="store_true", help="Upload rendered videos to TikTok after each successful render.")
@@ -5974,6 +5976,7 @@ def load_facebook_page_config(path: Path) -> FacebookPageConfig:
     return FacebookPageConfig(
         page_id=data["page_id"],
         page_access_token=data["access_token"],
+        instagram_business_id=data.get("instagram_business_id") or data.get("instagram_id"),
         api_version=data.get("api_version", DEFAULT_FACEBOOK_API_VERSION),
         reciter_key=data.get("reciter_key"),
         recitation_relative_path=data.get("recitation_relative_path"),
@@ -5981,6 +5984,100 @@ def load_facebook_page_config(path: Path) -> FacebookPageConfig:
         audio_base_url=data.get("audio_base_url", VERSES_AUDIO_BASE_URL),
         credit_lines=tuple(data.get("credit_lines", [])),
     )
+
+
+def upload_video_to_instagram_reel(
+    video_path: Path,
+    config: RenderConfig,
+    page_config: FacebookPageConfig,
+) -> str:
+    import subprocess
+    import json
+    import time
+
+    if not page_config.instagram_business_id:
+        raise ValueError("Instagram Business ID is required for Instagram uploads.")
+
+    print(f"Initializing Instagram Reel Upload for {video_path.name}")
+    caption = build_facebook_reel_description(config, page_config)
+    
+    # 1. Initialize Upload / Create Media Container
+    init_url = f"{FACEBOOK_GRAPH_API_BASE_URL}/{page_config.api_version}/{page_config.instagram_business_id}/media"
+    
+    # Note: Instagram API requires a public URL or a direct file upload via multipart/form-data for sessions.
+    # For Reels, we can use the same pattern as Facebook.
+    command_init = [
+        "curl", "-s", "-X", "POST", init_url,
+        "-F", f"access_token={page_config.page_access_token}",
+        "-F", "media_type=REELS",
+        "-F", f"caption={caption}",
+        "-F", f"video=@{video_path.absolute().as_posix()}"
+    ]
+    
+    print(f"Uploading media container to {init_url}...")
+    result_init = subprocess.run(command_init, capture_output=True, text=True, check=False)
+    
+    if result_init.returncode != 0:
+        raise RuntimeError(f"CURL Instagram init failed: {result_init.stderr}")
+        
+    try:
+        init_data = json.loads(result_init.stdout)
+    except Exception as e:
+        raise RuntimeError(f"Failed to parse Instagram response: {result_init.stdout}") from e
+        
+    if "error" in init_data:
+        raise RuntimeError(f"Instagram API Error (Init): {init_data['error']}")
+        
+    container_id = str(init_data.get("id", ""))
+    if not container_id:
+        raise RuntimeError(f"No container ID returned from Instagram: {init_data}")
+
+    # 2. Poll for status (Instagram requires the container to be 'FINISHED' before publishing)
+    status_url = f"{FACEBOOK_GRAPH_API_BASE_URL}/{page_config.api_version}/{container_id}"
+    print(f"Waiting for Instagram to process container {container_id}...")
+    
+    for _ in range(30): # Poll for 5 minutes max
+        status_res = subprocess.run([
+            "curl", "-s", "-G", status_url,
+            "-d", f"access_token={page_config.page_access_token}",
+            "-d", "fields=status_code"
+        ], capture_output=True, text=True, check=False)
+        
+        try:
+            status_data = json.loads(status_res.stdout)
+            status_code = status_data.get("status_code", "")
+            if status_code == "FINISHED":
+                print("Instagram processing complete.")
+                break
+            if status_code == "ERROR":
+                raise RuntimeError(f"Instagram processing failed: {status_data}")
+            print(f"Status: {status_code}. Sleeping 10s...")
+        except:
+            print("Error checking status, retrying...")
+            
+        time.sleep(10)
+    else:
+        raise TimeoutError("Instagram took too long to process the video.")
+
+    # 3. Publish
+    publish_url = f"{FACEBOOK_GRAPH_API_BASE_URL}/{page_config.api_version}/{page_config.instagram_business_id}/media_publish"
+    command_publish = [
+        "curl", "-s", "-X", "POST", publish_url,
+        "-F", f"access_token={page_config.page_access_token}",
+        "-F", f"creation_id={container_id}"
+    ]
+    
+    print(f"Publishing Reel {container_id}...")
+    result_publish = subprocess.run(command_publish, capture_output=True, text=True, check=False)
+    
+    try:
+        publish_data = json.loads(result_publish.stdout)
+        if "error" in publish_data:
+             raise RuntimeError(f"Instagram API Error (Publish): {publish_data['error']}")
+        print(f"Successfully published to Instagram! Media ID: {publish_data.get('id')}")
+        return str(publish_data.get("id"))
+    except Exception as e:
+        raise RuntimeError(f"Failed to publish Instagram reel: {result_publish.stdout}") from e
 
 
 def main() -> int:
@@ -6009,10 +6106,10 @@ def main() -> int:
             print(f"YouTube token saved to {youtube_options.token_file}")
             return 0
             
-        if args.facebook_upload:
+        if args.facebook_upload or args.instagram_upload:
             fb_config_path = base_dir / (args.facebook_page_config_file or DEFAULT_FACEBOOK_PAGE_CONFIG_FILE)
             if not fb_config_path.exists():
-                raise FileNotFoundError(f"Facebook config file missing: {fb_config_path}")
+                raise FileNotFoundError(f"Facebook/Instagram config file missing: {fb_config_path}")
             facebook_page_config = load_facebook_page_config(fb_config_path)
 
         use_auto_mode = args.auto or not args.config
@@ -6042,6 +6139,7 @@ def main() -> int:
                 render_video(config)
                 youtube_upload_result = None
                 facebook_upload_result = None
+                instagram_upload_result = None
                 tiktok_upload_result = None
                 if youtube_options is not None and args.youtube_upload:
                     resolved_youtube_options = resolve_youtube_upload_options_for_index(
@@ -6090,6 +6188,17 @@ def main() -> int:
                     if facebook_upload_result["watch_url"]:
                         facebook_message += f" {facebook_upload_result['watch_url']}"
                     print(facebook_message)
+                if facebook_page_config is not None and args.instagram_upload:
+                    if facebook_page_config.instagram_business_id:
+                        print(f"Uploading to Instagram Reels: {config.output_path.name}")
+                        instagram_video_id = upload_video_to_instagram_reel(
+                            video_path=config.output_path,
+                            config=config,
+                            page_config=facebook_page_config,
+                        )
+                        print(f"Uploaded to Instagram: media_id={instagram_video_id}")
+                    else:
+                        print("Skipping Instagram upload: instagram_business_id missing in config.")
                 if tiktok_options is not None and args.tiktok_upload:
                     print(f"Uploading to TikTok: {config.output_path.name}")
                     tiktok_upload_result = upload_video_to_tiktok(
