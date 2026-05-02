@@ -105,6 +105,7 @@ LONG_SURAH_IDS = {
 }
 AUTO_MAX_WHOLE_SURAH_DURATION = 60.0
 AUTO_STATIC_WHOLE_SURAH_MAX_QURAN_VERSES = 12
+AUTO_MANY_SEGMENTS_THRESHOLD = 20
 AUTO_RECENT_CHAPTER_WINDOW = 6
 AUTO_RECENT_RECITER_WINDOW = 3
 AUTO_RECENT_BACKGROUND_WINDOW = 6
@@ -3444,80 +3445,114 @@ def collect_auto_verses(
     minimum_duration = min(AUTO_MIN_DURATION, max(10.0, target_seconds * 0.68))
     estimated_verses_needed = max(3, int(target_seconds // 6) + 1)
     max_start = max(1, verses_count - estimated_verses_needed + 1)
-    
-    if globals().get('IS_WHOLE_SURAH'):
-        start_ayah = 1
+    effective_ceiling = target_seconds + AUTO_DURATION_OVERSHOOT_TOLERANCE
+
+    is_whole_surah = globals().get('IS_WHOLE_SURAH')
+
+    # Build a list of start positions to attempt.  When the first random pick
+    # lands near the chapter end the audio may be too short; instead of
+    # immediately failing (which wastes an outer retry) we try a few earlier
+    # start positions first and fall back to ayah 1 on the last attempt.
+    if is_whole_surah:
+        start_candidates = [1]
     else:
-        start_ayah = random.randint(1, max_start)
-        
-    current_ayah = start_ayah
-    selected_verses: list[AutoVerse] = []
-    total_duration = 0.0
+        first_pick = random.randint(1, max_start)
+        start_candidates = [first_pick]
+        for _ in range(2):
+            alt = random.randint(1, max_start)
+            if alt not in start_candidates:
+                start_candidates.append(alt)
+        if 1 not in start_candidates:
+            start_candidates.append(1)
+
     verses_cache: dict[int, list[dict[str, object]]] = {}
     audio_cache: dict[int, dict[str, str]] = {}
+    best_verses: list[AutoVerse] = []
+    best_duration = 0.0
 
-    while current_ayah <= verses_count:
-        page = ((current_ayah - 1) // 50) + 1
-        if page not in verses_cache:
-            verses_cache[page] = fetch_chapter_verses_page(chapter_number, page=page, translation_id=translation_id)
-            if reciter.recitation_id is not None:
-                audio_cache[page] = fetch_chapter_audio_page(
-                    chapter_number,
-                    page=page,
-                    recitation_id=reciter.recitation_id,
+    for start_ayah in start_candidates:
+        current_ayah = start_ayah
+        selected_verses: list[AutoVerse] = []
+        total_duration = 0.0
+
+        while current_ayah <= verses_count:
+            page = ((current_ayah - 1) // 50) + 1
+            if page not in verses_cache:
+                verses_cache[page] = fetch_chapter_verses_page(chapter_number, page=page, translation_id=translation_id)
+                if reciter.recitation_id is not None:
+                    audio_cache[page] = fetch_chapter_audio_page(
+                        chapter_number,
+                        page=page,
+                        recitation_id=reciter.recitation_id,
+                    )
+                else:
+                    audio_cache[page] = {}
+
+            verse_key = f"{chapter_number}:{current_ayah}"
+            verse_payload = next((item for item in verses_cache[page] if item.get("verse_key") == verse_key), None)
+            if verse_payload is None:
+                raise RuntimeError(f"Could not find verse data for {verse_key}.")
+
+            local_audio_path: Path | None = None
+            audio_url = audio_cache[page].get(verse_key)
+            if not audio_url and reciter.recitation_id is None:
+                audio_url, local_audio_path = resolve_auto_reciter_audio_source(
+                    reciter,
+                    chapter_number=chapter_number,
+                    chapter_name=chapter_name,
+                    ayah_number=current_ayah,
                 )
-            else:
-                audio_cache[page] = {}
+            if not audio_url and local_audio_path is None:
+                raise RuntimeError(f"Could not find audio URL for {verse_key} with reciter {reciter.reciter_name}.")
 
-        verse_key = f"{chapter_number}:{current_ayah}"
-        verse_payload = next((item for item in verses_cache[page] if item.get("verse_key") == verse_key), None)
-        if verse_payload is None:
-            raise RuntimeError(f"Could not find verse data for {verse_key}.")
+            arabic = clean_quranic_text(require_non_empty_text(verse_payload.get("text_uthmani", ""), f"text_uthmani for {verse_key}"))
+            translation = extract_translation_text(verse_payload) or translation_map.get(verse_key, "")
+            audio_path = local_audio_path or download_asset(audio_url, cache_dir / "audio", "audio")
+            duration = probe_duration(audio_path, ffprobe_command)
 
-        local_audio_path: Path | None = None
-        audio_url = audio_cache[page].get(verse_key)
-        if not audio_url and reciter.recitation_id is None:
-            audio_url, local_audio_path = resolve_auto_reciter_audio_source(
-                reciter,
-                chapter_number=chapter_number,
-                chapter_name=chapter_name,
-                ayah_number=current_ayah,
+            if not is_whole_surah and selected_verses and (total_duration + duration) > effective_ceiling:
+                break
+
+            selected_verses.append(
+                AutoVerse(
+                    verse_key=verse_key,
+                    arabic=arabic,
+                    translation=translation,
+                    audio_url=audio_url,
+                    audio_path=audio_path,
+                    duration=duration,
+                )
             )
-        if not audio_url and local_audio_path is None:
-            raise RuntimeError(f"Could not find audio URL for {verse_key} with reciter {reciter.reciter_name}.")
+            total_duration += duration
+            current_ayah += 1
 
-        arabic = clean_quranic_text(require_non_empty_text(verse_payload.get("text_uthmani", ""), f"text_uthmani for {verse_key}"))
-        translation = extract_translation_text(verse_payload) or translation_map.get(verse_key, "")
-        audio_path = local_audio_path or download_asset(audio_url, cache_dir / "audio", "audio")
-        duration = probe_duration(audio_path, ffprobe_command)
+            if not is_whole_surah and total_duration >= target_seconds:
+                break
 
-        if not globals().get('IS_WHOLE_SURAH') and selected_verses and (total_duration + duration) > target_seconds:
-            break
+        if not selected_verses:
+            continue
 
-        selected_verses.append(
-            AutoVerse(
-                verse_key=verse_key,
-                arabic=arabic,
-                translation=translation,
-                audio_url=audio_url,
-                audio_path=audio_path,
-                duration=duration,
-            )
-        )
-        total_duration += duration
-        current_ayah += 1
+        candidate_duration = sum(verse.duration for verse in selected_verses)
+        if candidate_duration >= minimum_duration:
+            return selected_verses
 
-        if not globals().get('IS_WHOLE_SURAH') and total_duration >= target_seconds:
-            break
+        # Keep track of the best attempt in case none individually pass.
+        if candidate_duration > best_duration:
+            best_verses = selected_verses
+            best_duration = candidate_duration
 
-    if not selected_verses:
+    # If the best attempt across all start positions still falls short, accept
+    # it when it is at least 75 % of the minimum (a lenient fallback) to avoid
+    # crashing the entire workflow over a small shortfall.
+    if best_verses:
+        lenient_floor = minimum_duration * 0.75
+        if best_duration >= lenient_floor:
+            return best_verses
+
+    if not best_verses:
         raise RuntimeError("Automatic verse selection returned no verses.")
 
-    final_duration = sum(verse.duration for verse in selected_verses)
-    if final_duration < minimum_duration:
-        raise RuntimeError("Selected verses are too short for the requested automatic render.")
-
-    return selected_verses
+    raise RuntimeError("Selected verses are too short for the requested automatic render.")
 
 
 def collect_auto_whole_surah_verses(
@@ -3891,7 +3926,7 @@ def build_auto_render_config(
 ) -> RenderConfig:
     last_error: Exception | None = None
 
-    for _ in range(20):
+    for _ in range(30):
         recent_reciters = set(
             get_recent_history_values(
                 history_entries,
@@ -4753,6 +4788,103 @@ def create_arabic_ass_file(
     return ass_path
 
 
+def create_translation_ass_file(
+    config: RenderConfig,
+    duration: float,
+    temp_dir: Path,
+    timed_segment_assets: list[TimedSegmentTextAsset],
+) -> Path | None:
+    """Create an ASS subtitle file for translation overlays.
+
+    This is used when there are many timed segments (e.g. 128 verses for a
+    whole surah) to avoid creating hundreds of chained drawtext filters in
+    the ffmpeg filter_complex which would crash the render.
+    """
+    if not timed_segment_assets:
+        return None
+    if len(timed_segment_assets) < AUTO_MANY_SEGMENTS_THRESHOLD:
+        return None
+
+    is_cinematic = is_cinematic_style(config.style_preset)
+    cinematic_variant = get_cinematic_variant(config.style_preset)
+    cinematic_arabic_offset = 100 if cinematic_variant == "compact" else 60 if cinematic_variant == "spacious" else 80
+    if globals().get('IS_LANDSCAPE'):
+        cinematic_translation_top = 800 if cinematic_variant == "compact" else 840 if cinematic_variant == "spacious" else 820
+    else:
+        cinematic_translation_top = 980 if cinematic_variant == "compact" else 1020 if cinematic_variant == "spacious" else 1000
+
+    resolved_font_file = resolve_drawtext_font_file(config.latin_font_file or config.font_file)
+    font_family = resolve_font_family_name(resolved_font_file)
+    if font_family is None:
+        font_family = "Sans"
+
+    dialogues: list[str] = []
+    for segment_asset in timed_segment_assets:
+        translation_lines = read_text_lines(segment_asset.translation_lines)
+        if not translation_lines:
+            continue
+
+        translation_font_size, translation_line_spacing = resolve_translation_text_metrics(
+            len(segment_asset.translation_lines),
+            is_cinematic=is_cinematic,
+        )
+        arabic_font_size, arabic_line_spacing = resolve_arabic_text_metrics(
+            len(segment_asset.arabic_lines),
+            is_cinematic=is_cinematic,
+            max_line_units=measure_arabic_line_units(
+                "\n".join(path.read_text(encoding="utf-8") for path in segment_asset.arabic_lines)
+            ),
+        )
+        arabic_block_height = (len(segment_asset.arabic_lines) * (arabic_font_size + arabic_line_spacing)) - arabic_line_spacing
+        preferred_arabic_top = ((VIDEO_HEIGHT - arabic_block_height) / 2) - (cinematic_arabic_offset if is_cinematic else 100)
+        _, translation_top = resolve_text_stack_positions(
+            arabic_block_height=arabic_block_height,
+            translation_line_count=len(segment_asset.translation_lines),
+            translation_font_size=translation_font_size,
+            translation_line_spacing=translation_line_spacing,
+            is_cinematic=is_cinematic,
+            preferred_arabic_top=preferred_arabic_top,
+            preferred_translation_top=cinematic_translation_top if is_cinematic else VIDEO_HEIGHT - (250 if globals().get('IS_LANDSCAPE') else 500),
+        )
+        trans_line_height = translation_font_size + translation_line_spacing
+        trans_block_height = (len(translation_lines) * trans_line_height) - translation_line_spacing
+        center_y = int(round(translation_top + (trans_block_height / 2)))
+        ass_text = escape_ass_text("\n".join(translation_lines))
+        override = (
+            f"{{\\an5\\q1\\pos({VIDEO_WIDTH // 2},{center_y})"
+            f"\\fs{translation_font_size}\\bord8\\shad0}}"
+        )
+        dialogues.append(
+            "Dialogue: 0,"
+            f"{format_ass_timestamp(segment_asset.start_time)},{format_ass_timestamp(segment_asset.end_time)},"
+            f"Translation,,0,0,0,,{override}{ass_text}"
+        )
+
+    if not dialogues:
+        return None
+
+    ass_lines = [
+        "[Script Info]",
+        "ScriptType: v4.00+",
+        "ScaledBorderAndShadow: yes",
+        f"PlayResX: {VIDEO_WIDTH}",
+        f"PlayResY: {VIDEO_HEIGHT}",
+        "WrapStyle: 1",
+        "",
+        "[V4+ Styles]",
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
+        f"Style: Translation,{font_family},36,&H00FCF8FA,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,8,0,5,50,50,50,1",
+        "",
+        "[Events]",
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+    ]
+    ass_lines.extend(dialogues)
+
+    ass_path = temp_dir / "translation_overlay.ass"
+    write_text_asset(ass_path, "\n".join(ass_lines))
+    return ass_path
+
+
 def build_ass_filter(
     input_label: str,
     output_label: str,
@@ -5104,6 +5236,7 @@ def build_filter_complex(
     timed_segment_assets: list[TimedSegmentTextAsset],
     arabic_ass_path: Path | None,
     arabic_ass_font_dir: Path | None,
+    translation_ass_path: Path | None = None,
 ) -> str:
     is_cinematic = is_cinematic_style(config.style_preset)
     cinematic_variant = get_cinematic_variant(config.style_preset)
@@ -5365,76 +5498,146 @@ def build_filter_complex(
         previous_label = "arabic_ass_layer"
 
     if use_timed_segment_overlays:
-        for index, segment_asset in enumerate(timed_segment_assets):
-            segment_alpha = build_timed_alpha_expression(segment_asset.start_time, segment_asset.end_time)
+        if translation_ass_path is not None:
+            # Efficient path: use ASS subtitle files for both Arabic and
+            # translation overlays.  This avoids creating hundreds of chained
+            # drawtext filters which would crash ffmpeg for long surahs.
+            if arabic_ass_path is not None:
+                # Arabic already handled by ASS above; nothing to do here.
+                pass
+            else:
+                for index, segment_asset in enumerate(timed_segment_assets):
+                    segment_alpha = build_timed_alpha_expression(segment_asset.start_time, segment_asset.end_time)
+                    arabic_font_size, arabic_line_spacing = resolve_arabic_text_metrics(
+                        len(segment_asset.arabic_lines),
+                        is_cinematic=is_cinematic,
+                        max_line_units=measure_arabic_line_units("\n".join(path.read_text(encoding="utf-8") for path in segment_asset.arabic_lines)),
+                    )
+                    translation_font_size, translation_line_spacing = resolve_translation_text_metrics(
+                        len(segment_asset.translation_lines),
+                        is_cinematic=is_cinematic,
+                    )
+                    arabic_block_height = (len(segment_asset.arabic_lines) * (arabic_font_size + arabic_line_spacing)) - arabic_line_spacing
+                    preferred_arabic_top = ((VIDEO_HEIGHT - arabic_block_height) / 2) - (cinematic_arabic_offset if is_cinematic else 100)
+                    arabic_top, _ = resolve_text_stack_positions(
+                        arabic_block_height=arabic_block_height,
+                        translation_line_count=len(segment_asset.translation_lines),
+                        translation_font_size=translation_font_size,
+                        translation_line_spacing=translation_line_spacing,
+                        is_cinematic=is_cinematic,
+                        preferred_arabic_top=preferred_arabic_top,
+                        preferred_translation_top=cinematic_translation_top if is_cinematic else VIDEO_HEIGHT - (250 if globals().get('IS_LANDSCAPE') else 500),
+                    )
+                    arabic_prefix = f"timed_segment_arabic_layer_{index}"
+                    filters.extend(
+                        build_text_block_filters(
+                            input_label=previous_label,
+                            output_prefix=arabic_prefix,
+                            text_paths=segment_asset.arabic_lines,
+                            top_y=arabic_top,
+                            font_size=arabic_font_size,
+                            font_color="white",
+                            box_color=None,
+                            alpha_expression=segment_alpha,
+                            font_file=config.font_file,
+                            line_spacing=arabic_line_spacing,
+                            box_border=0,
+                            border_width=10,
+                            border_color="black",
+                            shadow_x=0,
+                            shadow_y=0,
+                            shadow_color="0x00000000",
+                        )
+                    )
+                    previous_label = get_last_layer_label(arabic_prefix, segment_asset.arabic_lines, previous_label)
 
-            arabic_font_size, arabic_line_spacing = resolve_arabic_text_metrics(
-                len(segment_asset.arabic_lines),
-                is_cinematic=is_cinematic,
-                max_line_units=measure_arabic_line_units("\n".join(path.read_text(encoding="utf-8") for path in segment_asset.arabic_lines)),
+            # Render translations using ASS subtitle overlay.
+            trans_ass_font_dir = arabic_ass_font_dir
+            if config.latin_font_file and config.latin_font_file != config.font_file:
+                latin_font_dir = prepare_ass_font_dir(resolve_drawtext_font_file(config.latin_font_file), translation_ass_path.parent)
+                if latin_font_dir is not None:
+                    trans_ass_font_dir = latin_font_dir
+            filters.append(
+                build_ass_filter(
+                    previous_label,
+                    "translation_ass_layer",
+                    ass_path=translation_ass_path,
+                    font_dir=trans_ass_font_dir,
+                )
             )
-            translation_font_size, translation_line_spacing = resolve_translation_text_metrics(
-                len(segment_asset.translation_lines),
-                is_cinematic=is_cinematic,
-            )
-            arabic_block_height = (len(segment_asset.arabic_lines) * (arabic_font_size + arabic_line_spacing)) - arabic_line_spacing
-            preferred_arabic_top = ((VIDEO_HEIGHT - arabic_block_height) / 2) - (cinematic_arabic_offset if is_cinematic else 100)
-            arabic_top, translation_top = resolve_text_stack_positions(
-                arabic_block_height=arabic_block_height,
-                translation_line_count=len(segment_asset.translation_lines),
-                translation_font_size=translation_font_size,
-                translation_line_spacing=translation_line_spacing,
-                is_cinematic=is_cinematic,
-                preferred_arabic_top=preferred_arabic_top,
-                preferred_translation_top=cinematic_translation_top if is_cinematic else VIDEO_HEIGHT - (250 if globals().get('IS_LANDSCAPE') else 500),
-            )
-            if arabic_ass_path is None:
-                arabic_prefix = f"timed_segment_arabic_layer_{index}"
+            previous_label = "translation_ass_layer"
+        else:
+            # Standard path for few segments: use drawtext filters.
+            for index, segment_asset in enumerate(timed_segment_assets):
+                segment_alpha = build_timed_alpha_expression(segment_asset.start_time, segment_asset.end_time)
 
+                arabic_font_size, arabic_line_spacing = resolve_arabic_text_metrics(
+                    len(segment_asset.arabic_lines),
+                    is_cinematic=is_cinematic,
+                    max_line_units=measure_arabic_line_units("\n".join(path.read_text(encoding="utf-8") for path in segment_asset.arabic_lines)),
+                )
+                translation_font_size, translation_line_spacing = resolve_translation_text_metrics(
+                    len(segment_asset.translation_lines),
+                    is_cinematic=is_cinematic,
+                )
+                arabic_block_height = (len(segment_asset.arabic_lines) * (arabic_font_size + arabic_line_spacing)) - arabic_line_spacing
+                preferred_arabic_top = ((VIDEO_HEIGHT - arabic_block_height) / 2) - (cinematic_arabic_offset if is_cinematic else 100)
+                arabic_top, translation_top = resolve_text_stack_positions(
+                    arabic_block_height=arabic_block_height,
+                    translation_line_count=len(segment_asset.translation_lines),
+                    translation_font_size=translation_font_size,
+                    translation_line_spacing=translation_line_spacing,
+                    is_cinematic=is_cinematic,
+                    preferred_arabic_top=preferred_arabic_top,
+                    preferred_translation_top=cinematic_translation_top if is_cinematic else VIDEO_HEIGHT - (250 if globals().get('IS_LANDSCAPE') else 500),
+                )
+                if arabic_ass_path is None:
+                    arabic_prefix = f"timed_segment_arabic_layer_{index}"
+
+                    filters.extend(
+                        build_text_block_filters(
+                            input_label=previous_label,
+                            output_prefix=arabic_prefix,
+                            text_paths=segment_asset.arabic_lines,
+                            top_y=arabic_top,
+                            font_size=arabic_font_size,
+                            font_color="white",
+                            box_color=None,
+                            alpha_expression=segment_alpha,
+                            font_file=config.font_file,
+                            line_spacing=arabic_line_spacing,
+                            box_border=0,
+                            border_width=10,
+                            border_color="black",
+                            shadow_x=0,
+                            shadow_y=0,
+                            shadow_color="0x00000000",
+                        )
+                    )
+                    previous_label = get_last_layer_label(arabic_prefix, segment_asset.arabic_lines, previous_label)
+
+                translation_prefix = f"timed_segment_translation_layer_{index}"
                 filters.extend(
                     build_text_block_filters(
                         input_label=previous_label,
-                        output_prefix=arabic_prefix,
-                        text_paths=segment_asset.arabic_lines,
-                        top_y=arabic_top,
-                        font_size=arabic_font_size,
-                        font_color="white",
-                        box_color=None,
+                        output_prefix=translation_prefix,
+                        text_paths=segment_asset.translation_lines,
+                        top_y=translation_top,
+                        font_size=translation_font_size,
+                        font_color="0xf8fafc",
+                        box_color=None if is_cinematic else "0x00000022",
                         alpha_expression=segment_alpha,
-                        font_file=config.font_file,
-                        line_spacing=arabic_line_spacing,
+                        font_file=config.latin_font_file or (None if is_cinematic else config.font_file),
+                        line_spacing=translation_line_spacing,
                         box_border=0,
-                        border_width=10,
+                        border_width=8,
                         border_color="black",
                         shadow_x=0,
                         shadow_y=0,
                         shadow_color="0x00000000",
                     )
                 )
-                previous_label = get_last_layer_label(arabic_prefix, segment_asset.arabic_lines, previous_label)
-
-            translation_prefix = f"timed_segment_translation_layer_{index}"
-            filters.extend(
-                build_text_block_filters(
-                    input_label=previous_label,
-                    output_prefix=translation_prefix,
-                    text_paths=segment_asset.translation_lines,
-                    top_y=translation_top,
-                    font_size=translation_font_size,
-                    font_color="0xf8fafc",
-                    box_color=None if is_cinematic else "0x00000022",
-                    alpha_expression=segment_alpha,
-                    font_file=config.latin_font_file or (None if is_cinematic else config.font_file),
-                    line_spacing=translation_line_spacing,
-                    box_border=0,
-                    border_width=8,
-                    border_color="black",
-                    shadow_x=0,
-                    shadow_y=0,
-                    shadow_color="0x00000000",
-                )
-            )
-            previous_label = get_last_layer_label(translation_prefix, segment_asset.translation_lines, previous_label)
+                previous_label = get_last_layer_label(translation_prefix, segment_asset.translation_lines, previous_label)
     elif use_segment_overlays:
         intro_padding = 0.45
         outro_padding = 0.45
@@ -5624,6 +5827,12 @@ def build_command(config: RenderConfig, duration: float, temp_dir: Path, ffmpeg_
         segment_assets,
         timed_segment_assets,
     )
+    translation_ass_path = create_translation_ass_file(
+        config,
+        duration,
+        temp_dir,
+        timed_segment_assets,
+    )
     arabic_ass_font_dir = prepare_ass_font_dir(resolve_drawtext_font_file(config.font_file), temp_dir)
 
     command: list[str] = [ffmpeg_command, "-y"]
@@ -5653,6 +5862,7 @@ def build_command(config: RenderConfig, duration: float, temp_dir: Path, ffmpeg_
         timed_segment_assets,
         arabic_ass_path,
         arabic_ass_font_dir,
+        translation_ass_path=translation_ass_path,
     )
 
     audio_fade_start = max(0.0, duration - 0.8)
