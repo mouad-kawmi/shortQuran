@@ -94,6 +94,7 @@ jobs:
           if [ -n "$(git status --porcelain .cache/auto_history.json)" ]; then
             git add .cache/auto_history.json
             git commit -m "chore: update auto history"
+            git pull --rebase origin main || true
             git push
           else
             echo "No auto history changes to commit."
