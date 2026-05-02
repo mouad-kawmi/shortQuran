@@ -5945,6 +5945,22 @@ def render_video(config: RenderConfig) -> None:
         subprocess.run(command, check=True, env=render_env)
 
 
+def load_facebook_page_config(path: Path) -> FacebookPageConfig:
+    import json
+    with path.open("r", encoding="utf-8") as f:
+        data = json.load(f)
+    return FacebookPageConfig(
+        page_id=data["page_id"],
+        page_access_token=data["access_token"],
+        api_version=data.get("api_version", DEFAULT_FACEBOOK_API_VERSION),
+        reciter_key=data.get("reciter_key"),
+        recitation_relative_path=data.get("recitation_relative_path"),
+        reciter_name=data.get("reciter_name"),
+        audio_base_url=data.get("audio_base_url", VERSES_AUDIO_BASE_URL),
+        credit_lines=tuple(data.get("credit_lines", [])),
+    )
+
+
 def main() -> int:
     global IS_LANDSCAPE, IS_WHOLE_SURAH, VIDEO_WIDTH, VIDEO_HEIGHT
     args = parse_args()
