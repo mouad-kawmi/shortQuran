@@ -4239,32 +4239,11 @@ def wrap_arabic_text(text: str, words_per_line: int, *, max_line_units: int | No
 
 
 def choose_arabic_words_per_line(text: str, *, is_cinematic: bool) -> int:
-    word_count = len([word for word in text.split() if word.strip()])
-    if not is_cinematic:
-        return 5
-    if word_count <= 5:
-        return 5
-    if word_count <= 10:
-        return 5
-    return 5
+    return 10
 
 
 def choose_arabic_line_unit_budget(text: str, *, is_cinematic: bool) -> int:
-    word_count = len([word for word in text.split() if word.strip()])
-    if not is_cinematic:
-        if word_count <= 5:
-            return 24
-        if word_count <= 10:
-            return 21
-        return 19
-
-    if word_count <= 4:
-        return 26
-    if word_count <= 8:
-        return 24
-    if word_count <= 12:
-        return 22
-    return 20
+    return 35
 
 
 def measure_arabic_line_units(text: str) -> int:
@@ -5181,7 +5160,7 @@ def create_segment_assets(config: RenderConfig, temp_dir: Path) -> list[SegmentT
     segment_assets: list[SegmentTextAsset] = []
     for index, segment in enumerate(config.word_segments):
         arabic_text = build_wrapped_arabic_text(segment.arabic, is_cinematic=is_cinematic)
-        translation_text = wrap_text(segment.translation, width=26 if is_cinematic else 28)
+        translation_text = wrap_text(segment.translation, width=40 if is_cinematic else 45)
         segment_assets.append(
             SegmentTextAsset(
                 arabic_lines=build_arabic_line_files(temp_dir, f"segment_arabic_{index}", arabic_text),
@@ -5200,7 +5179,7 @@ def create_timed_segment_assets(config: RenderConfig, temp_dir: Path) -> list[Ti
     timed_assets: list[TimedSegmentTextAsset] = []
     for index, segment in enumerate(config.timed_segments):
         arabic_text = build_wrapped_arabic_text(segment.arabic, is_cinematic=is_cinematic)
-        translation_text = wrap_text(segment.translation, width=26 if is_cinematic else 28)
+        translation_text = wrap_text(segment.translation, width=40 if is_cinematic else 45)
         timed_assets.append(
             TimedSegmentTextAsset(
                 arabic_lines=build_arabic_line_files(temp_dir, f"timed_segment_arabic_{index}", arabic_text),
