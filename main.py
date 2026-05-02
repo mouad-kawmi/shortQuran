@@ -524,6 +524,7 @@ class TikTokClientConfig:
 
 @dataclass(frozen=True)
 class FacebookPageConfig:
+    page_id: str
     page_access_token: str
     api_version: str = DEFAULT_FACEBOOK_API_VERSION
     reciter_key: str | None = None
@@ -565,6 +566,15 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--youtube-upload", action="store_true", help="Upload rendered videos to YouTube after each successful render.")
     parser.add_argument("--youtube-auth-only", action="store_true", help="Run the one-time YouTube OAuth flow, save the token file, and exit.")
+    
+    # Facebook upload options
+    parser.add_argument("--facebook-upload", action="store_true", help="Upload rendered videos to Facebook Page after each successful render.")
+    parser.add_argument("--facebook-page-config-file", help=f"Path to the Facebook Page config JSON file. Defaults to {DEFAULT_FACEBOOK_PAGE_CONFIG_FILE}.")
+    
+    # TikTok upload options
+    parser.add_argument("--tiktok-upload", action="store_true", help="Upload rendered videos to TikTok after each successful render.")
+    parser.add_argument("--tiktok-client-config-file", help="Path to the TikTok API client config.")
+    parser.add_argument("--tiktok-token-file", help="Path to the TikTok API token.")
     parser.add_argument(
         "--youtube-client-secrets-file",
         help="Path to the YouTube OAuth client secrets JSON file. Defaults to .secrets/youtube-client-secret.json or YOUTUBE_CLIENT_SECRETS_FILE.",
@@ -1760,6 +1770,51 @@ def poll_facebook_reel_status(page_config: FacebookPageConfig, video_id: str) ->
         time.sleep(FACEBOOK_STATUS_POLL_SECONDS)
     return latest_status
 
+
+def upload_video_to_facebook(
+    video_path: Path,
+    config: RenderConfig,
+    options: object,
+    page_config: FacebookPageConfig,
+) -> dict[str, str]:
+    import subprocess
+    import json
+    
+    print(f"Initializing Facebook Video Upload for {video_path.name}")
+    description = build_facebook_reel_description(config, page_config)
+    upload_url = f"{FACEBOOK_GRAPH_API_BASE_URL}/{page_config.api_version}/{page_config.page_id}/videos"
+    
+    command = [
+        "curl", "-s", "-X", "POST", upload_url,
+        "-F", f"access_token={page_config.page_access_token}",
+        "-F", f"description={description}",
+        "-F", f"source=@{video_path.absolute().as_posix()}"
+    ]
+    
+    print(f"Uploading to {upload_url} via CURL")
+    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    
+    if result.returncode != 0:
+        raise RuntimeError(f"CURL upload failed: {result.stderr}")
+        
+    try:
+        response_data = json.loads(result.stdout)
+    except Exception as e:
+        raise RuntimeError(f"Failed to parse Facebook response: {result.stdout}") from e
+        
+    if "error" in response_data:
+        raise RuntimeError(f"Facebook API Error: {response_data['error']}")
+        
+    video_id = str(response_data.get("id", ""))
+    if not video_id:
+        raise RuntimeError(f"Missing video ID in response: {response_data}")
+        
+    return {
+        "video_id": video_id,
+        "status": "PUBLISHED",
+        "video_state": "PUBLISHED",
+        "watch_url": f"https://www.facebook.com/watch/?v={video_id}"
+    }
 
 
 
@@ -5903,7 +5958,7 @@ def main() -> int:
     configs: list[RenderConfig] = []
     base_dir = Path.cwd()
     youtube_options = None
-    facebook_options = None
+    facebook_options = object() if args.facebook_upload else None
     facebook_page_config = None
     tiktok_options = None
     try:
@@ -5915,6 +5970,12 @@ def main() -> int:
             get_youtube_credentials(youtube_options, interactive=True)
             print(f"YouTube token saved to {youtube_options.token_file}")
             return 0
+            
+        if args.facebook_upload:
+            fb_config_path = base_dir / (args.facebook_page_config_file or DEFAULT_FACEBOOK_PAGE_CONFIG_FILE)
+            if not fb_config_path.exists():
+                raise FileNotFoundError(f"Facebook config file missing: {fb_config_path}")
+            facebook_page_config = load_facebook_page_config(fb_config_path)
 
         use_auto_mode = args.auto or not args.config
         if use_auto_mode:
