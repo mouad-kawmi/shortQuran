@@ -4020,6 +4020,7 @@ def build_auto_render_config(
         chapter_number = int(chapter.get("id") or 0)
         verses_count = int(chapter.get("verses_count") or 0)
         chapter_name = normalize_optional_text(chapter.get("name_simple")) or f"Surah {chapter_number}"
+        arabic_surah_name = normalize_optional_text(chapter.get("name_arabic")) or chapter_name
         if chapter_number <= 0 or verses_count <= 0:
             continue
 
@@ -4035,7 +4036,6 @@ def build_auto_render_config(
                     raise RuntimeError(
                         f"Showcase reciter '{reciter.reciter_name}' does not define audio for chapter {chapter_number}."
                     )
-                arabic_surah_name = normalize_optional_text(chapter.get("name_arabic")) or chapter_name
                 return finalize_showcase_render_config(
                     base_dir=base_dir,
                     index=index,
