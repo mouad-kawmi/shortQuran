@@ -2,6 +2,9 @@ name: Auto YouTube Landscape Full Surah
 
 on:
   workflow_dispatch:
+  schedule:
+    # 09:00 UTC => 10:00 AM in Africa/Casablanca (when local offset is UTC+1).
+    - cron: "0 9 * * *"
 
 permissions:
   contents: write
