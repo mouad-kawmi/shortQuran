@@ -58,10 +58,10 @@ AUTO_TITLE_HOOKS = {
     "reminder": "تلاوة هادئة تشرح الصدر",
 }
 AUTO_TITLE_TEMPLATES = {
-    "hook_reference": "{hook} | سورة {chapter_name} | {reciter_name}",
-    "hook_reciter": "{hook} | سورة {chapter_name} | بصوت {reciter_name}",
-    "surah_focus": "سورة {chapter_name} كاملة | {hook} | {reciter_name}",
-    "ayah_focus": "{hook} | سورة {chapter_name} الآيات {verse_range_label} | {reciter_name}",
+    "hook_reference": "{reciter_name} | سورة {chapter_name} | تلاوة خاشعة تريح القلب | {hook}",
+    "hook_reciter": "{reciter_name} | سورة {chapter_name} | {hook} | تلاوة خاشعة",
+    "surah_focus": "{reciter_name} | سورة {chapter_name} كاملة | تلاوة خاشعة",
+    "ayah_focus": "{reciter_name} | سورة {chapter_name} | تلاوة خاشعة تريح القلب",
 }
 
 ARABIC_RECITER_NAMES = {
@@ -1860,15 +1860,11 @@ def build_youtube_title(config: RenderConfig) -> str:
         candidate = f"{base_value} | {cleaned_segment}"
         return candidate if len(candidate) <= max_length else base_value
 
-    preferred_title = f"{surah_label} | {verse_label}" if verse_label else surah_label
-    preferred_title = append_distinct_segment(preferred_title, reciter_label, max_length=92)
-
     if hook_title:
-        hook_title = append_distinct_segment(hook_title, verse_label, max_length=92)
-        hook_title = append_distinct_segment(hook_title, reciter_label, max_length=92)
         base_title = hook_title
     else:
-        base_title = preferred_title
+        base_title = f"{surah_label} | {verse_label}" if verse_label else surah_label
+        base_title = append_distinct_segment(base_title, reciter_label, max_length=92)
 
     shorts_suffix = " #Shorts"
     if not globals().get('IS_LANDSCAPE') and "#shorts" not in base_title.lower() and len(base_title) + len(shorts_suffix) <= 100:
@@ -3901,6 +3897,8 @@ def finalize_auto_render_config(
         style_preset=style_preset,
         auto_history_entry=history_entry,
         attribution_lines=reciter.attribution_lines,
+        arabic_surah_name=arabic_surah_name,
+        arabic_reciter_name=ARABIC_RECITER_NAMES.get(reciter.reciter_name, reciter.reciter_name),
     )
     config.description_text = build_auto_description(
         config,
@@ -4524,12 +4522,9 @@ def build_ass_dialogue(
     line_spacing: int,
     top_y: float,
 ) -> str:
-    line_height = font_size + line_spacing
-    block_height = (len(text_lines) * line_height) - line_spacing
-    center_y = int(round(top_y + (block_height / 2)))
     ass_text = escape_ass_text("\n".join(text_lines))
     override = (
-        f"{{\\an5\\q1\\pos({VIDEO_WIDTH // 2},{center_y})"
+        f"{{\\an8\\q1\\pos({VIDEO_WIDTH // 2},{top_y})"
         f"\\fs{font_size}\\bord10\\shad0}}"
     )
     return (
@@ -4846,12 +4841,9 @@ def create_translation_ass_file(
             preferred_arabic_top=preferred_arabic_top,
             preferred_translation_top=cinematic_translation_top if is_cinematic else VIDEO_HEIGHT - (250 if globals().get('IS_LANDSCAPE') else 500),
         )
-        trans_line_height = translation_font_size + translation_line_spacing
-        trans_block_height = (len(translation_lines) * trans_line_height) - translation_line_spacing
-        center_y = int(round(translation_top + (trans_block_height / 2)))
         ass_text = escape_ass_text("\n".join(translation_lines))
         override = (
-            f"{{\\an5\\q1\\pos({VIDEO_WIDTH // 2},{center_y})"
+            f"{{\\an8\\q1\\pos({VIDEO_WIDTH // 2},{translation_top})"
             f"\\fs{translation_font_size}\\bord8\\shad0}}"
         )
         dialogues.append(
