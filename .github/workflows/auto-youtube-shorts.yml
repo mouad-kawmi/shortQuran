@@ -45,28 +45,6 @@ jobs:
           printf '%s' "$YOUTUBE_CLIENT_SECRET_JSON" > .secrets/youtube-client-secret.json
           printf '%s' "$YOUTUBE_TOKEN_JSON" > .secrets/youtube-token.json
 
-      - name: Write TikTok Secrets
-        env:
-          TIKTOK_CLIENT_CONFIG_JSON: ${{ secrets.TIKTOK_CLIENT_CONFIG_JSON }}
-          TIKTOK_TOKEN_JSON: ${{ secrets.TIKTOK_TOKEN_JSON }}
-        run: |
-          mkdir -p .secrets
-          if [ -n "$TIKTOK_CLIENT_CONFIG_JSON" ]; then
-            printf '%s' "$TIKTOK_CLIENT_CONFIG_JSON" > .secrets/tiktok-client-config.json
-          fi
-          if [ -n "$TIKTOK_TOKEN_JSON" ]; then
-            printf '%s' "$TIKTOK_TOKEN_JSON" > .secrets/tiktok-token.json
-          fi
-
-      - name: Write Facebook Secrets
-        env:
-          FACEBOOK_PAGE_CONFIG_JSON: ${{ secrets.FACEBOOK_PAGE_CONFIG_JSON }}
-        run: |
-          mkdir -p .secrets
-          if [ -n "$FACEBOOK_PAGE_CONFIG_JSON" ]; then
-            printf '%s' "$FACEBOOK_PAGE_CONFIG_JSON" > .secrets/facebook-page-config.json
-          fi
-
       - name: Write Auto Reciter Library
         env:
           AUTO_RECITER_LIBRARY_JSON: ${{ secrets.AUTO_RECITER_LIBRARY_JSON }}
@@ -77,16 +55,7 @@ jobs:
           fi
 
       - name: Generate And Upload YouTube Short
-        env:
-          ENABLE_TIKTOK_UPLOAD: ${{ secrets.ENABLE_TIKTOK_UPLOAD }}
         run: |
-          EXTRA_PLATFORM_ARGS=""
-          if [ "$ENABLE_TIKTOK_UPLOAD" = "true" ] && [ -f ./.secrets/tiktok-client-config.json ] && [ -f ./.secrets/tiktok-token.json ]; then
-            EXTRA_PLATFORM_ARGS="$EXTRA_PLATFORM_ARGS --tiktok-upload --tiktok-client-config-file ./.secrets/tiktok-client-config.json --tiktok-token-file ./.secrets/tiktok-token.json"
-          fi
-          if [ -f ./.secrets/facebook-page-config.json ] ; then
-            EXTRA_PLATFORM_ARGS="$EXTRA_PLATFORM_ARGS --facebook-upload --instagram-upload --facebook-page-config-file ./.secrets/facebook-page-config.json"
-          fi
           python ./main.py \
             --auto \
             --count 1 \
@@ -95,8 +64,7 @@ jobs:
             --youtube-client-secrets-file ./.secrets/youtube-client-secret.json \
             --youtube-token-file ./.secrets/youtube-token.json \
             --youtube-privacy-status public \
-            --youtube-tags "quran,shorts,islam,quran recitation,peaceful quran" \
-            $EXTRA_PLATFORM_ARGS
+            --youtube-tags "quran,shorts,islam,quran recitation,peaceful quran"
 
 
       - name: Persist Auto History
