@@ -4636,7 +4636,7 @@ def create_arabic_ass_file(
 
     is_cinematic = is_cinematic_style(config.style_preset)
     cinematic_variant = get_cinematic_variant(config.style_preset)
-    cinematic_arabic_offset = 100 if cinematic_variant == "compact" else 60 if cinematic_variant == "spacious" else 80
+    cinematic_arabic_offset = 180 if cinematic_variant == "compact" else 140 if cinematic_variant == "spacious" else 160
     if globals().get('IS_LANDSCAPE'):
         cinematic_translation_top = 800 if cinematic_variant == "compact" else 840 if cinematic_variant == "spacious" else 820
     else:
@@ -4860,7 +4860,7 @@ def create_translation_ass_file(
 
     is_cinematic = is_cinematic_style(config.style_preset)
     cinematic_variant = get_cinematic_variant(config.style_preset)
-    cinematic_arabic_offset = 100 if cinematic_variant == "compact" else 60 if cinematic_variant == "spacious" else 80
+    cinematic_arabic_offset = 180 if cinematic_variant == "compact" else 140 if cinematic_variant == "spacious" else 160
     if globals().get('IS_LANDSCAPE'):
         cinematic_translation_top = 800 if cinematic_variant == "compact" else 840 if cinematic_variant == "spacious" else 820
     else:
@@ -5274,7 +5274,7 @@ def build_filter_complex(
     cinematic_variant = get_cinematic_variant(config.style_preset)
     cinematic_meta_top = 78 if cinematic_variant == "compact" else 112 if cinematic_variant == "spacious" else 92
     cinematic_meta_font_size = 26 if cinematic_variant == "compact" else 30 if cinematic_variant == "spacious" else 28
-    cinematic_arabic_offset = 100 if cinematic_variant == "compact" else 60 if cinematic_variant == "spacious" else 80
+    cinematic_arabic_offset = 180 if cinematic_variant == "compact" else 140 if cinematic_variant == "spacious" else 160
     if globals().get('IS_LANDSCAPE'):
         cinematic_translation_top = 800 if cinematic_variant == "compact" else 840 if cinematic_variant == "spacious" else 820
     else:
