@@ -49,7 +49,6 @@ BISMILLAH_TRANSLATION = "In the name of Allah, the Most Compassionate, the Most 
 AUTO_HISTORY_FILE = ".cache/auto_history.json"
 AUTO_STYLE_PRESETS = (
     "cinematic",
-    "minimalist_info",
 )
 AUTO_TITLE_HOOKS = {
     "calm": "تلاوة هادئة تريح الأعصاب",
@@ -3970,7 +3969,7 @@ def finalize_auto_render_config(
         description_text=None,
         fps=DEFAULT_FPS,
         timed_segments=timed_segments or None,
-        prefer_static_text_overlay=use_static_source_audio,
+        prefer_static_text_overlay=False,
         show_meta=True,
         show_brand=False,
         style_preset=style_preset,
@@ -4105,7 +4104,7 @@ def build_auto_render_config(
         if not reciter.showcase_only and target_seconds < 60:
             selected_target_seconds = choose_auto_target_seconds(target_seconds, history_entries)
         try:
-            if reciter.showcase_only:
+            if reciter.showcase_only and not globals().get('IS_WHOLE_SURAH'):
                 showcase_audio_path = whole_surah_files.get(chapter_number)
                 if showcase_audio_path is None:
                     showcase_audio_path = ensure_auto_reciter_chapter_audio(reciter, chapter_number=chapter_number)
@@ -4318,11 +4317,11 @@ def wrap_arabic_text(text: str, words_per_line: int, *, max_line_units: int | No
 
 
 def choose_arabic_words_per_line(text: str, *, is_cinematic: bool) -> int:
-    return 10
+    return 12
 
 
 def choose_arabic_line_unit_budget(text: str, *, is_cinematic: bool) -> int:
-    return 35
+    return 55
 
 
 def measure_arabic_line_units(text: str) -> int:
@@ -5139,24 +5138,6 @@ def build_line_files(temp_dir: Path, prefix: str, text: str) -> list[Path]:
     return line_paths
 
 
-def create_text_assets(config: RenderConfig, temp_dir: Path) -> dict[str, list[Path]]:
-    is_cinematic = is_cinematic_style(config.style_preset)
-    is_showcase = config.style_preset == SHOWCASE_STYLE
-
-    if is_showcase:
-        # Showcase: show surah name (Arabic + English) + reciter name (Arabic + English), no verse
-        arabic_surah = config.arabic_surah_name or config.surah_name
-        english_surah = config.surah_name
-        arabic_reciter = config.arabic_reciter_name or ""
-        english_reciter = config.reciter_name or ""
-
-        # Verse slot = Arabic surah name (large, Arabic font)
-        verse_text = "\n".join(filter(None, [arabic_surah, arabic_reciter]))
-        # Translation slot = English surah + reciter info
-        reciter_line = " ".join(filter(None, [arabic_reciter, f"· {english_reciter}" if english_reciter else ""])).strip()
-        translation_text = "\n".join(filter(None, [english_surah, english_reciter]))
-
-        brand_text = wrap_text(config.brand_text, width=24) if config.show_brand else ""
 def build_arabic_line_files(temp_dir: Path, prefix: str, text: str) -> list[Path]:
     return build_line_files(temp_dir, prefix, text)
 
