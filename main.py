@@ -4401,6 +4401,7 @@ def resolve_text_stack_positions(
     else:
         top_margin = 260 if is_cinematic else 200
         bottom_margin = 320 if is_cinematic else 300
+        preferred_translation_top += 80
 
     if translation_line_count <= 0:
         max_arabic_top = VIDEO_HEIGHT - bottom_margin - arabic_block_height
@@ -4412,7 +4413,7 @@ def resolve_text_stack_positions(
         return int(round(arabic_top)), int(round(preferred_translation_top))
 
     translation_block_height = (translation_line_count * (translation_font_size + translation_line_spacing)) - translation_line_spacing
-    minimum_gap = 30 if is_cinematic else 34
+    minimum_gap = 90 if is_cinematic else 70
 
     arabic_top = preferred_arabic_top
     translation_top = max(preferred_translation_top, arabic_top + arabic_block_height + minimum_gap)
