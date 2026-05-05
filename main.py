@@ -1180,17 +1180,22 @@ def get_cinematic_variant(style_preset: str) -> str:
     return "default"
 
 
-def build_youtube_upload_options(args: argparse.Namespace, base_dir: Path) -> YouTubeUploadOptions:
+def build_youtube_upload_options_list(args: argparse.Namespace, base_dir: Path) -> list[YouTubeUploadOptions]:
     client_secrets_raw = (
         normalize_optional_text(args.youtube_client_secrets_file)
         or normalize_optional_text(os.getenv("YOUTUBE_CLIENT_SECRETS_FILE"))
         or DEFAULT_YOUTUBE_CLIENT_SECRETS_FILE
     )
-    token_file_raw = (
+    
+    token_files_raw_str = (
         normalize_optional_text(args.youtube_token_file)
         or normalize_optional_text(os.getenv("YOUTUBE_TOKEN_FILE"))
         or DEFAULT_YOUTUBE_TOKEN_FILE
     )
+    
+    # Support multiple token files separated by comma
+    token_files_raw = [t.strip() for t in token_files_raw_str.split(",") if t.strip()]
+    
     schedule_at = parse_optional_datetime(args.youtube_schedule_at, field_name="youtube-schedule-at")
     auto_schedule_enabled = bool(args.youtube_auto_schedule) and schedule_at is None
     schedule_slots = resolve_youtube_schedule_slots(
@@ -1199,24 +1204,28 @@ def build_youtube_upload_options(args: argparse.Namespace, base_dir: Path) -> Yo
     )
     for slot in schedule_slots:
         parse_schedule_slot(slot)
+    
     privacy_status = args.youtube_privacy_status
     if schedule_at is not None or auto_schedule_enabled:
         privacy_status = "private"
 
-    return YouTubeUploadOptions(
-        client_secrets_file=resolve_runtime_path(base_dir, client_secrets_raw),
-        token_file=resolve_runtime_path(base_dir, token_file_raw),
-        privacy_status=privacy_status,
-        schedule_at=schedule_at,
-        auto_schedule_enabled=auto_schedule_enabled,
-        schedule_timezone=require_non_empty_text(args.youtube_schedule_timezone, "youtube-schedule-timezone"),
-        schedule_slots=schedule_slots,
-        schedule_reference_at=datetime.now(timezone.utc),
-        category_id=require_non_empty_text(args.youtube_category_id, "youtube-category-id"),
-        tags=parse_csv_text_list(args.youtube_tags),
-        default_language=require_non_empty_text(args.youtube_default_language, "youtube-default-language"),
-        made_for_kids=bool(args.youtube_made_for_kids),
-    )
+    options_list = []
+    for token_file_raw in token_files_raw:
+        options_list.append(YouTubeUploadOptions(
+            client_secrets_file=resolve_runtime_path(base_dir, client_secrets_raw),
+            token_file=resolve_runtime_path(base_dir, token_file_raw),
+            privacy_status=privacy_status,
+            schedule_at=schedule_at,
+            auto_schedule_enabled=auto_schedule_enabled,
+            schedule_timezone=require_non_empty_text(args.youtube_schedule_timezone, "youtube-schedule-timezone"),
+            schedule_slots=schedule_slots,
+            schedule_reference_at=datetime.now(timezone.utc),
+            category_id=require_non_empty_text(args.youtube_category_id, "youtube-category-id"),
+            tags=parse_csv_text_list(args.youtube_tags),
+            default_language=require_non_empty_text(args.youtube_default_language, "youtube-default-language"),
+            made_for_kids=bool(args.youtube_made_for_kids),
+        ))
+    return options_list
 
 
 def resolve_auto_schedule_datetime(options: YouTubeUploadOptions, upload_index: int) -> datetime | None:
@@ -6090,18 +6099,19 @@ def main() -> int:
 
     configs: list[RenderConfig] = []
     base_dir = Path.cwd()
-    youtube_options = None
+    youtube_options_list = []
     facebook_options = object() if args.facebook_upload else None
     facebook_page_config = None
     tiktok_options = None
     try:
         if args.youtube_upload or args.youtube_auth_only:
-            youtube_options = build_youtube_upload_options(args, base_dir)
+            youtube_options_list = build_youtube_upload_options_list(args, base_dir)
         if args.youtube_auth_only:
-            if youtube_options is None:
+            if not youtube_options_list:
                 raise RuntimeError("YouTube upload options could not be built.")
-            get_youtube_credentials(youtube_options, interactive=True)
-            print(f"YouTube token saved to {youtube_options.token_file}")
+            for youtube_options in youtube_options_list:
+                get_youtube_credentials(youtube_options, interactive=True)
+                print(f"YouTube token saved to {youtube_options.token_file}")
             return 0
             
         if args.facebook_upload or args.instagram_upload:
@@ -6139,28 +6149,34 @@ def main() -> int:
                 facebook_upload_result = None
                 instagram_upload_result = None
                 tiktok_upload_result = None
-                if youtube_options is not None and args.youtube_upload:
-                    resolved_youtube_options = resolve_youtube_upload_options_for_index(
-                        youtube_options,
-                        upload_index=index,
-                    )
-                    print(f"Uploading to YouTube: {config.output_path.name}")
-                    if resolved_youtube_options.schedule_at is not None:
-                        print(
-                            "YouTube publish slot: "
-                            f"{resolved_youtube_options.schedule_at.astimezone(resolve_schedule_timezone(resolved_youtube_options.schedule_timezone)).isoformat()}"
+                if youtube_options_list and args.youtube_upload:
+                    last_youtube_upload_result = None
+                    for youtube_options in youtube_options_list:
+                        resolved_youtube_options = resolve_youtube_upload_options_for_index(
+                            youtube_options,
+                            upload_index=index,
                         )
-                    youtube_upload_result = upload_video_to_youtube(
-                        video_path=config.output_path,
-                        config=config,
-                        options=resolved_youtube_options,
-                        interactive_auth=False,
-                    )
-                    print(
-                        "Uploaded to YouTube: "
-                        f"{youtube_upload_result['watch_url']} "
-                        f"({youtube_upload_result['privacy_status']})"
-                    )
+                        print(f"Uploading to YouTube channel ({youtube_options.token_file.name}): {config.output_path.name}")
+                        if resolved_youtube_options.schedule_at is not None:
+                            print(
+                                "YouTube publish slot: "
+                                f"{resolved_youtube_options.schedule_at.astimezone(resolve_schedule_timezone(resolved_youtube_options.schedule_timezone)).isoformat()}"
+                            )
+                        youtube_upload_result = upload_video_to_youtube(
+                            video_path=config.output_path,
+                            config=config,
+                            options=resolved_youtube_options,
+                            interactive_auth=False,
+                        )
+                        print(
+                            f"Uploaded to YouTube ({youtube_options.token_file.name}): "
+                            f"{youtube_upload_result['watch_url']} "
+                            f"({youtube_upload_result['privacy_status']})"
+                        )
+                        last_youtube_upload_result = youtube_upload_result
+                    
+                    # Store the result of the last upload for history (or we could store all, but one is enough for tracking)
+                    youtube_upload_result = last_youtube_upload_result
                 if facebook_options is not None and args.facebook_upload:
                     facebook_render_config = config
                     if facebook_page_config is not None:
@@ -6222,7 +6238,7 @@ def main() -> int:
                             config.auto_history_entry["youtube_publish_at"] = youtube_upload_result["publish_at"]
                             config.auto_history_entry["youtube_schedule_timezone"] = (
                                 resolved_youtube_options.schedule_timezone
-                                if youtube_options is not None
+                                if youtube_options_list
                                 else DEFAULT_YOUTUBE_AUTO_SCHEDULE_TIMEZONE
                             )
                         config.auto_history_entry["uploaded_at"] = datetime.now(timezone.utc).isoformat()
