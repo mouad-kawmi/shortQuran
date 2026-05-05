@@ -40,10 +40,14 @@ jobs:
         env:
           YOUTUBE_CLIENT_SECRET_JSON: ${{ secrets.YOUTUBE_CLIENT_SECRET_JSON }}
           YOUTUBE_TOKEN_JSON: ${{ secrets.YOUTUBE_TOKEN_JSON }}
+          YOUTUBE_TOKEN_JSON_3: ${{ secrets.YOUTUBE_TOKEN_JSON_3 }}
         run: |
           mkdir -p .secrets
           printf '%s' "$YOUTUBE_CLIENT_SECRET_JSON" > .secrets/youtube-client-secret.json
           printf '%s' "$YOUTUBE_TOKEN_JSON" > .secrets/youtube-token.json
+          if [ -n "$YOUTUBE_TOKEN_JSON_3" ]; then
+            printf '%s' "$YOUTUBE_TOKEN_JSON_3" > .secrets/youtube-token-3.json
+          fi
 
       - name: Write Auto Reciter Library
         env:
@@ -56,15 +60,22 @@ jobs:
 
       - name: Generate And Upload YouTube Short
         run: |
+          # Build YouTube token file list
+          TOKEN_FILES="./.secrets/youtube-token.json"
+          if [ -f ./.secrets/youtube-token-3.json ]; then
+            TOKEN_FILES="$TOKEN_FILES,./.secrets/youtube-token-3.json"
+          fi
+
           python ./main.py \
             --auto \
             --count 1 \
             --target-seconds 60 \
             --youtube-upload \
             --youtube-client-secrets-file ./.secrets/youtube-client-secret.json \
-            --youtube-token-file ./.secrets/youtube-token.json \
+            --youtube-token-file "$TOKEN_FILES" \
             --youtube-privacy-status public \
             --youtube-tags "quran,shorts,islam,quran recitation,peaceful quran"
+
 
 
       - name: Persist Auto History
