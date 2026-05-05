@@ -4853,6 +4853,9 @@ def create_translation_ass_file(
     whole surah) to avoid creating hundreds of chained drawtext filters in
     the ffmpeg filter_complex which would crash the render.
     """
+    # Skip translation overlay entirely for whole-surah mode (Arabic only)
+    if globals().get('IS_WHOLE_SURAH'):
+        return None
     if not timed_segment_assets:
         return None
     if len(timed_segment_assets) < AUTO_MANY_SEGMENTS_THRESHOLD:
@@ -5166,7 +5169,7 @@ def create_text_assets(config: RenderConfig, temp_dir: Path) -> dict[str, list[P
             "verse": build_arabic_line_files(temp_dir, "verse", verse_text),
             "brand": build_line_files(temp_dir, "brand", brand_text),
         }
-        if translation_text:
+        if translation_text and globals().get('IS_LANDSCAPE'):
             assets["translation"] = build_line_files(temp_dir, "translation", translation_text)
         return assets
 
@@ -5198,7 +5201,11 @@ def create_text_assets(config: RenderConfig, temp_dir: Path) -> dict[str, list[P
         meta_text = wrap_text(meta_value, width=24 if is_cinematic else 36)
 
     verse_text = build_wrapped_arabic_text(config.verse_text, is_cinematic=is_cinematic)
-    translation_text = wrap_text(config.translation, width=30 if is_cinematic else 34) if config.translation else ""
+    # Skip translation entirely for whole-surah videos (Arabic only, centered)
+    is_whole_surah = globals().get('IS_WHOLE_SURAH')
+    translation_text = ""
+    if not is_whole_surah:
+        translation_text = wrap_text(config.translation, width=30 if is_cinematic else 34) if config.translation else ""
     brand_text = wrap_text(config.brand_text, width=24 if is_cinematic else 32) if config.show_brand else ""
 
     assets = {
@@ -5207,7 +5214,7 @@ def create_text_assets(config: RenderConfig, temp_dir: Path) -> dict[str, list[P
         "brand": build_line_files(temp_dir, "brand", brand_text),
     }
 
-    if translation_text:
+    if translation_text and globals().get('IS_LANDSCAPE'):
         assets["translation"] = build_line_files(temp_dir, "translation", translation_text)
 
     return assets
@@ -5218,14 +5225,17 @@ def create_segment_assets(config: RenderConfig, temp_dir: Path) -> list[SegmentT
         return []
 
     is_cinematic = is_cinematic_style(config.style_preset)
+    is_whole_surah = globals().get('IS_WHOLE_SURAH')
     segment_assets: list[SegmentTextAsset] = []
     for index, segment in enumerate(config.word_segments):
         arabic_text = build_wrapped_arabic_text(segment.arabic, is_cinematic=is_cinematic)
         translation_text = wrap_text(segment.translation, width=40 if is_cinematic else 45)
+        # Skip translation lines for whole-surah mode
+        show_translation = globals().get('IS_LANDSCAPE') and not is_whole_surah
         segment_assets.append(
             SegmentTextAsset(
                 arabic_lines=build_arabic_line_files(temp_dir, f"segment_arabic_{index}", arabic_text),
-                translation_lines=build_line_files(temp_dir, f"segment_translation_{index}", translation_text),
+                translation_lines=build_line_files(temp_dir, f"segment_translation_{index}", translation_text) if show_translation else [],
             )
         )
 
@@ -5237,14 +5247,17 @@ def create_timed_segment_assets(config: RenderConfig, temp_dir: Path) -> list[Ti
         return []
 
     is_cinematic = is_cinematic_style(config.style_preset)
+    is_whole_surah = globals().get('IS_WHOLE_SURAH')
     timed_assets: list[TimedSegmentTextAsset] = []
     for index, segment in enumerate(config.timed_segments):
         arabic_text = build_wrapped_arabic_text(segment.arabic, is_cinematic=is_cinematic)
         translation_text = wrap_text(segment.translation, width=40 if is_cinematic else 45)
+        # Skip translation lines for whole-surah mode
+        show_translation = globals().get('IS_LANDSCAPE') and not is_whole_surah
         timed_assets.append(
             TimedSegmentTextAsset(
                 arabic_lines=build_arabic_line_files(temp_dir, f"timed_segment_arabic_{index}", arabic_text),
-                translation_lines=build_line_files(temp_dir, f"timed_segment_translation_{index}", translation_text),
+                translation_lines=build_line_files(temp_dir, f"timed_segment_translation_{index}", translation_text) if show_translation else [],
                 start_time=segment.start_time,
                 end_time=segment.end_time,
             )
@@ -5496,27 +5509,30 @@ def build_filter_complex(
         else cinematic_meta_font_size if is_cinematic else 48
     )
     meta_line_spacing = 8 if is_cinematic else 12
-    filters.extend(
-        build_text_block_filters(
-            input_label="base_waves" if is_minimalist else "base",
-            output_prefix="meta_layer",
-            text_paths=text_assets["meta"],
-            top_y=cinematic_meta_top if is_cinematic else 140,
-            font_size=meta_font_size,
-            font_color="0xf8fafccc" if is_cinematic else "0xffd166",
-            box_color=None,
-            alpha_expression=alpha_expression,
-            font_file=config.latin_font_file or (None if is_cinematic else config.font_file),
-            line_spacing=meta_line_spacing,
-            box_border=0,
-            border_width=1,
-            border_color="0x00000066" if is_cinematic else "0x2a1a00dd",
-            shadow_x=0,
-            shadow_y=4 if is_cinematic else 6,
-            shadow_color="0x000000aa",
+    if config.show_meta and not globals().get('IS_WHOLE_SURAH'):
+        filters.extend(
+            build_text_block_filters(
+                input_label="base_waves" if is_minimalist else "base",
+                output_prefix="meta_layer",
+                text_paths=text_assets["meta"],
+                top_y=cinematic_meta_top if is_cinematic else 140,
+                font_size=meta_font_size,
+                font_color="0xf8fafccc" if is_cinematic else "0xffd166",
+                box_color=None,
+                alpha_expression=alpha_expression,
+                font_file=config.latin_font_file or (None if is_cinematic else config.font_file),
+                line_spacing=meta_line_spacing,
+                box_border=0,
+                border_width=1,
+                border_color="0x00000066" if is_cinematic else "0x2a1a00dd",
+                shadow_x=0,
+                shadow_y=4 if is_cinematic else 6,
+                shadow_color="0x000000aa",
+            )
         )
-    )
-    previous_label = get_last_layer_label("meta_layer", text_assets["meta"], "base_waves" if is_minimalist else "base")
+        previous_label = get_last_layer_label("meta_layer", text_assets["meta"], "base_waves" if is_minimalist else "base")
+    else:
+        previous_label = "base_waves" if is_minimalist else "base"
 
     if arabic_ass_path is not None:
         filters.append(
