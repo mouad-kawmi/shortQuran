@@ -514,6 +514,12 @@ class YouTubeUploadOptions:
 
 
 @dataclass(frozen=True)
+class YouTubeUploadFailure:
+    token_file: Path
+    message: str
+
+
+@dataclass(frozen=True)
 class TikTokClientConfig:
     client_key: str
     client_secret: str
@@ -2161,6 +2167,21 @@ def upload_video_to_youtube(
         "privacy_status": status["privacyStatus"],
         "publish_at": status.get("publishAt", ""),
     }
+
+
+def describe_youtube_upload_error(error: BaseException) -> str:
+    message = str(error).strip() or error.__class__.__name__
+    normalized_message = message.lower()
+    if "invalid_grant" in normalized_message or "expired or revoked" in normalized_message:
+        return (
+            f"{message} Refresh this channel's YouTube OAuth token with --youtube-auth-only "
+            "and update the matching GitHub secret, usually YOUTUBE_TOKEN_JSON."
+        )
+    return message
+
+
+def format_youtube_upload_failures(failures: list[YouTubeUploadFailure]) -> str:
+    return "; ".join(f"{failure.token_file.name}: {failure.message}" for failure in failures)
 
 
 def iter_background_library_dirs(base_dir: Path) -> list[Path]:
@@ -6151,6 +6172,7 @@ def main() -> int:
                 tiktok_upload_result = None
                 if youtube_options_list and args.youtube_upload:
                     last_youtube_upload_result = None
+                    youtube_upload_failures: list[YouTubeUploadFailure] = []
                     for youtube_options in youtube_options_list:
                         resolved_youtube_options = resolve_youtube_upload_options_for_index(
                             youtube_options,
@@ -6162,19 +6184,42 @@ def main() -> int:
                                 "YouTube publish slot: "
                                 f"{resolved_youtube_options.schedule_at.astimezone(resolve_schedule_timezone(resolved_youtube_options.schedule_timezone)).isoformat()}"
                             )
-                        youtube_upload_result = upload_video_to_youtube(
-                            video_path=config.output_path,
-                            config=config,
-                            options=resolved_youtube_options,
-                            interactive_auth=False,
-                        )
+                        try:
+                            youtube_upload_result = upload_video_to_youtube(
+                                video_path=config.output_path,
+                                config=config,
+                                options=resolved_youtube_options,
+                                interactive_auth=False,
+                            )
+                        except Exception as error:  # noqa: BLE001
+                            failure = YouTubeUploadFailure(
+                                token_file=youtube_options.token_file,
+                                message=describe_youtube_upload_error(error),
+                            )
+                            youtube_upload_failures.append(failure)
+                            print(
+                                f"Warning: YouTube upload failed ({failure.token_file.name}): {failure.message}",
+                                file=sys.stderr,
+                            )
+                            continue
                         print(
                             f"Uploaded to YouTube ({youtube_options.token_file.name}): "
                             f"{youtube_upload_result['watch_url']} "
                             f"({youtube_upload_result['privacy_status']})"
                         )
                         last_youtube_upload_result = youtube_upload_result
-                    
+
+                    if youtube_upload_failures:
+                        failure_summary = format_youtube_upload_failures(youtube_upload_failures)
+                        if last_youtube_upload_result is None:
+                            raise RuntimeError(f"All YouTube uploads failed: {failure_summary}")
+                        print(
+                            "Warning: "
+                            f"{len(youtube_upload_failures)} YouTube channel upload(s) failed; "
+                            f"continuing because at least one channel uploaded. {failure_summary}",
+                            file=sys.stderr,
+                        )
+
                     # Store the result of the last upload for history (or we could store all, but one is enough for tracking)
                     youtube_upload_result = last_youtube_upload_result
                 if facebook_options is not None and args.facebook_upload:
@@ -6266,7 +6311,7 @@ def main() -> int:
                     append_auto_history_entry(base_dir, config.auto_history_entry)
             except Exception as error:  # noqa: BLE001
                 raise RuntimeError(
-                    f"Render {index}/{total_configs} failed for "
+                    f"Render/upload job {index}/{total_configs} failed for "
                     f"{config.surah_name} ({config.verse_reference}): {error}"
                 ) from error
     except Exception as error:  # noqa: BLE001

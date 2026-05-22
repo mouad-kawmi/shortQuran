@@ -211,6 +211,12 @@ After that, uploads can run unattended as long as the token file is available:
 python .\main.py --auto --count 1 --target-seconds 60 --youtube-upload --youtube-client-secrets-file .\.secrets\youtube-client-secret.json --youtube-token-file .\.secrets\youtube-token.json --youtube-privacy-status private
 ```
 
+The included GitHub Actions workflows intentionally use only `.secrets/youtube-token.json`, so shorts and full-surah videos upload to the first YouTube channel only.
+
+If the channel token fails with `invalid_grant` or `Token has been expired or revoked`, regenerate the token with `--youtube-auth-only`, then update the GitHub secret `YOUTUBE_TOKEN_JSON`.
+
+If the video uploads but the custom thumbnail returns HTTP 403, the upload itself is still valid. Check that the exact YouTube channel is verified and allowed to use custom thumbnails, or regenerate that channel's OAuth token.
+
 Optional flags:
 
 - `--youtube-schedule-at 2026-04-10T18:00:00+01:00`
