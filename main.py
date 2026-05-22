@@ -46,6 +46,7 @@ DEFAULT_AUTO_CHAPTER_MIN = 67
 LOCAL_BACKGROUND_LIBRARY_DIRNAME = "backgroundPhoto"
 BISMILLAH_ARABIC = "بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ"
 BISMILLAH_TRANSLATION = "In the name of Allah, the Most Compassionate, the Most Merciful."
+BISMILLAH_TAFSIR = "أبدأ باسم الله مستعينًا به، وهو الرحمن الرحيم."
 AUTO_HISTORY_FILE = ".cache/auto_history.json"
 AUTO_STYLE_PRESETS = (
     "cinematic",
@@ -3661,6 +3662,25 @@ def clean_tafsir_text(text: str) -> str:
     return " ".join(decoded_text.split()).strip()
 
 
+def has_displayable_tafsir_text(text: str) -> bool:
+    normalized = normalize_optional_text(text)
+    return bool(normalized and re.search(r"[\u0600-\u06ff]", normalized))
+
+
+def require_displayable_tafsir_for_auto_verses(verses: list[AutoVerse]) -> None:
+    missing_keys = [
+        verse.verse_key
+        for verse in verses
+        if get_verse_number_from_key(verse.verse_key) > 0
+        and not has_displayable_tafsir_text(verse.tafsir)
+    ]
+    if missing_keys:
+        sample_keys = ", ".join(missing_keys[:6])
+        if len(missing_keys) > 6:
+            sample_keys = f"{sample_keys}, ..."
+        raise RuntimeError(f"Selected verses are missing displayable Tafsir al-Muyassar: {sample_keys}")
+
+
 def fetch_muyassar_tafsir_map(chapter_number: int) -> dict[str, str]:
     tafsir_map: dict[str, str] = {}
     page = 1
@@ -3789,6 +3809,8 @@ def collect_auto_verses(
             arabic = clean_quranic_text(require_non_empty_text(verse_payload.get("text_uthmani", ""), f"text_uthmani for {verse_key}"))
             translation = extract_translation_text(verse_payload) or translation_map.get(verse_key, "")
             tafsir = tafsir_map.get(verse_key, "")
+            if not is_whole_surah and not has_displayable_tafsir_text(tafsir):
+                break
             audio_path = local_audio_path or download_asset(audio_url, cache_dir / "audio", "audio")
             duration = probe_duration(audio_path, ffprobe_command)
 
@@ -3907,6 +3929,7 @@ def collect_auto_whole_surah_verses(
             audio_url="",
             audio_path=whole_surah_audio_path,
             duration=basmala_duration,
+            tafsir=BISMILLAH_TAFSIR,
         )
 
     if globals().get('IS_WHOLE_SURAH'):
@@ -3940,6 +3963,8 @@ def collect_auto_whole_surah_verses(
             current_duration += basmala_duration
 
         for verse in quran_verses[start_index:]:
+            if not has_displayable_tafsir_text(verse.tafsir):
+                break
             if (
                 current_verses
                 and current_duration >= minimum_duration
@@ -4029,6 +4054,8 @@ def finalize_auto_render_config(
     reference_verses = [verse for verse in selected_verses if get_verse_number_from_key(verse.verse_key) > 0]
     if not reference_verses:
         raise RuntimeError("Automatic render configuration requires at least one Quran verse segment.")
+    if not globals().get('IS_WHOLE_SURAH'):
+        require_displayable_tafsir_for_auto_verses(reference_verses)
 
     verse_start = get_verse_number_from_key(reference_verses[0].verse_key)
     verse_end = get_verse_number_from_key(reference_verses[-1].verse_key)
@@ -4524,7 +4551,7 @@ def wrap_multiline_text(text: str, width: int) -> str:
 
 
 def contains_arabic_text(text: str) -> bool:
-    return bool(re.search(r"[\u0600-\u06ff]", text))
+    return has_displayable_tafsir_text(text)
 
 
 def contains_arabic_text_paths(text_paths: list[Path]) -> bool:
@@ -4548,7 +4575,7 @@ def build_creator_note_overlay_text(config: RenderConfig) -> str:
 
 
 def build_tafsir_overlay_text(tafsir_text: str) -> str:
-    if not contains_arabic_text(tafsir_text):
+    if not has_displayable_tafsir_text(tafsir_text):
         return ""
     width = 70 if globals().get('IS_LANDSCAPE') else 42
     return wrap_multiline_text(tafsir_text, width=width)
