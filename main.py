@@ -129,6 +129,7 @@ AUTO_RECENT_METADATA_WINDOW = 4
 AUTO_RECENT_SHOWCASE_START_WINDOW = 4
 AUTO_DESCRIPTION_EXCERPT_CHARS = 220
 CREATOR_NOTE_EXCERPT_CHARS = 150
+TAFSIR_MUYASSAR_RESOURCE_ID = 16
 DEFAULT_YOUTUBE_AUTO_SCHEDULE_PRESET = "ma_mena_prime"
 DEFAULT_YOUTUBE_AUTO_SCHEDULE_TIMEZONE = "Africa/Casablanca"
 DEFAULT_YOUTUBE_AUTO_SCHEDULE_BUFFER_MINUTES = 30
@@ -250,6 +251,7 @@ class TimedSegment:
     translation: str
     start_time: float
     end_time: float
+    tafsir: str = ""
 
 
 @dataclass(frozen=True)
@@ -274,6 +276,7 @@ class AutoVerse:
     audio_url: str
     audio_path: Path
     duration: float
+    tafsir: str = ""
 
 
 @dataclass(frozen=True)
@@ -1171,6 +1174,9 @@ def build_auto_description(
         translation_excerpt=translation_excerpt,
         cta=cta_text,
     ).strip()
+    tafsir_excerpt = build_config_tafsir_excerpt(config)
+    if tafsir_excerpt:
+        description_body = f"{description_body}\n\nTafsir al-Muyassar:\n{tafsir_excerpt}"
     creator_note = normalize_optional_text(config.creator_note)
     if creator_note:
         description_body = f"{description_body}\n\nReflection note:\n{creator_note}"
@@ -2191,6 +2197,18 @@ def build_youtube_tags(config: RenderConfig, extra_tags: tuple[str, ...]) -> lis
     return deduped_tags[:12]
 
 
+def build_config_tafsir_excerpt(config: RenderConfig, *, limit: int = 700) -> str:
+    tafsir_parts: list[str] = []
+    if config.timed_segments:
+        for segment in config.timed_segments:
+            tafsir_text = normalize_optional_text(segment.tafsir)
+            if tafsir_text and tafsir_text not in tafsir_parts:
+                tafsir_parts.append(tafsir_text)
+    if not tafsir_parts:
+        return ""
+    return build_translation_excerpt(" ".join(tafsir_parts), limit=limit)
+
+
 def build_youtube_description(config: RenderConfig) -> str:
     custom_description = normalize_optional_text(config.description_text)
     if custom_description:
@@ -2209,6 +2227,9 @@ def build_youtube_description(config: RenderConfig) -> str:
         lines.extend(["", "Arabic:", config.verse_text.strip()])
     if config.translation:
         lines.extend(["", "Meaning:", config.translation.strip()])
+    tafsir_excerpt = build_config_tafsir_excerpt(config)
+    if tafsir_excerpt:
+        lines.extend(["", "Tafsir al-Muyassar:", tafsir_excerpt])
     if config.creator_note:
         lines.extend(["", "Reflection note:", config.creator_note.strip()])
     if config.attribution_lines:
@@ -2790,6 +2811,7 @@ def build_facebook_timed_segments(
                 translation=template_segment.translation,
                 start_time=cursor,
                 end_time=cursor + duration,
+                tafsir=template_segment.tafsir,
             )
         )
         cursor += duration
@@ -3707,6 +3729,58 @@ def extract_translation_text(verse_payload: dict[str, object]) -> str:
     return clean_translation_text(raw_text)
 
 
+def clean_tafsir_text(text: str) -> str:
+    without_tags = re.sub(r"<[^>]+>", " ", text)
+    decoded_text = html.unescape(without_tags)
+    return " ".join(decoded_text.split()).strip()
+
+
+def fetch_muyassar_tafsir_map(chapter_number: int) -> dict[str, str]:
+    tafsir_map: dict[str, str] = {}
+    page = 1
+    while True:
+        payload = fetch_quran_api_json(
+            f"/tafsirs/{TAFSIR_MUYASSAR_RESOURCE_ID}/by_chapter/{chapter_number}",
+            {
+                "fields": "verse_key,text",
+                "page": page,
+                "per_page": 50,
+            },
+        )
+        tafsirs = payload.get("tafsirs")
+        if not isinstance(tafsirs, list):
+            raise RuntimeError(f"Invalid tafsir payload returned for chapter {chapter_number}.")
+
+        for item in tafsirs:
+            if not isinstance(item, dict):
+                continue
+            verse_key = normalize_optional_text(item.get("verse_key"))
+            raw_text = normalize_optional_text(item.get("text"))
+            if verse_key and raw_text:
+                tafsir_map[verse_key] = clean_tafsir_text(raw_text)
+
+        pagination = payload.get("pagination")
+        next_page = None
+        if isinstance(pagination, dict):
+            next_page = pagination.get("next_page")
+        if next_page is None:
+            break
+        try:
+            page = int(next_page)
+        except (TypeError, ValueError):
+            break
+
+    return tafsir_map
+
+
+def fetch_muyassar_tafsir_map_or_empty(chapter_number: int) -> dict[str, str]:
+    try:
+        return fetch_muyassar_tafsir_map(chapter_number)
+    except Exception as error:  # noqa: BLE001
+        print(f"Warning: could not fetch Tafsir al-Muyassar for chapter {chapter_number}: {error}", file=sys.stderr)
+        return {}
+
+
 def collect_auto_verses(
     *,
     chapter_number: int,
@@ -3715,6 +3789,7 @@ def collect_auto_verses(
     reciter: AutoReciter,
     translation_id: int,
     translation_map: dict[str, str],
+    tafsir_map: dict[str, str],
     target_seconds: float,
     cache_dir: Path,
     ffprobe_command: str,
@@ -3787,6 +3862,7 @@ def collect_auto_verses(
 
             arabic = clean_quranic_text(require_non_empty_text(verse_payload.get("text_uthmani", ""), f"text_uthmani for {verse_key}"))
             translation = extract_translation_text(verse_payload) or translation_map.get(verse_key, "")
+            tafsir = tafsir_map.get(verse_key, "")
             audio_path = local_audio_path or download_asset(audio_url, cache_dir / "audio", "audio")
             duration = probe_duration(audio_path, ffprobe_command)
 
@@ -3801,6 +3877,7 @@ def collect_auto_verses(
                     audio_url=audio_url,
                     audio_path=audio_path,
                     duration=duration,
+                    tafsir=tafsir,
                 )
             )
             total_duration += duration
@@ -3864,6 +3941,7 @@ def collect_auto_whole_surah_verses(
         raise RuntimeError(f"Could not load verse payloads for chapter {chapter_number}.")
 
     translation_map = fetch_public_translation_map(chapter_number)
+    tafsir_map = fetch_muyassar_tafsir_map_or_empty(chapter_number)
     total_duration = probe_duration(whole_surah_audio_path, ffprobe_command)
     include_basmala = whole_surah_includes_basmala and chapter_starts_with_basmala(chapter_number)
     basmala_duration = 0.0
@@ -3881,6 +3959,7 @@ def collect_auto_whole_surah_verses(
         verse_key = require_non_empty_text(verse_payload.get("verse_key", ""), f"verse_key for chapter {chapter_number}")
         arabic = clean_quranic_text(require_non_empty_text(verse_payload.get("text_uthmani", ""), f"text_uthmani for {verse_key}"))
         translation = extract_translation_text(verse_payload) or translation_map.get(verse_key, "")
+        tafsir = tafsir_map.get(verse_key, "")
         quran_verses.append(
             AutoVerse(
                 verse_key=verse_key,
@@ -3889,6 +3968,7 @@ def collect_auto_whole_surah_verses(
                 audio_url="",
                 audio_path=whole_surah_audio_path,
                 duration=verse_duration,
+                tafsir=tafsir,
             )
         )
 
@@ -4089,6 +4169,7 @@ def finalize_auto_render_config(
                 translation=verse.translation,
                 start_time=cursor,
                 end_time=cursor + verse.duration,
+                tafsir=verse.tafsir,
             )
         )
         cursor += verse.duration
@@ -4385,6 +4466,7 @@ def build_auto_render_config(
                 )
 
             translation_map = fetch_public_translation_map(chapter_number)
+            tafsir_map = fetch_muyassar_tafsir_map_or_empty(chapter_number)
             selected_verses = collect_auto_verses(
                 chapter_number=chapter_number,
                 chapter_name=chapter_name,
@@ -4392,6 +4474,7 @@ def build_auto_render_config(
                 reciter=reciter,
                 translation_id=translation_id,
                 translation_map=translation_map,
+                tafsir_map=tafsir_map,
                 target_seconds=selected_target_seconds,
                 cache_dir=(base_dir / DEFAULT_CACHE_DIR).resolve(),
                 ffprobe_command=ffprobe_command,
@@ -4519,7 +4602,23 @@ def wrap_multiline_text(text: str, width: int) -> str:
     return "\n".join(wrapped_lines)
 
 
+def contains_arabic_text(text: str) -> bool:
+    return bool(re.search(r"[\u0600-\u06ff]", text))
+
+
+def contains_arabic_text_paths(text_paths: list[Path]) -> bool:
+    for text_path in text_paths:
+        try:
+            if contains_arabic_text(text_path.read_text(encoding="utf-8")):
+                return True
+        except OSError:
+            continue
+    return False
+
+
 def build_creator_note_overlay_text(config: RenderConfig) -> str:
+    if config.timed_segments and any(normalize_optional_text(segment.tafsir) for segment in config.timed_segments):
+        return ""
     creator_note = normalize_optional_text(config.creator_note)
     if creator_note is None:
         return ""
@@ -5115,7 +5214,9 @@ def create_translation_ass_file(
     else:
         cinematic_translation_top = 980 if cinematic_variant == "compact" else 1020 if cinematic_variant == "spacious" else 1000
 
-    resolved_font_file = resolve_drawtext_font_file(config.latin_font_file or config.font_file)
+    has_arabic_explanation = any(contains_arabic_text_paths(segment.translation_lines) for segment in timed_segment_assets)
+    explanation_font_file = config.font_file if has_arabic_explanation else config.latin_font_file or config.font_file
+    resolved_font_file = resolve_drawtext_font_file(explanation_font_file)
     font_family = resolve_font_family_name(resolved_font_file)
     if font_family is None:
         font_family = "Sans"
@@ -5481,7 +5582,7 @@ def create_segment_assets(config: RenderConfig, temp_dir: Path) -> list[SegmentT
         arabic_text = build_wrapped_arabic_text(segment.arabic, is_cinematic=is_cinematic)
         translation_text = wrap_text(segment.translation, width=40 if is_cinematic else 45)
         # Skip translation lines for whole-surah mode
-        show_translation = globals().get('IS_LANDSCAPE') and not is_whole_surah
+        show_translation = not is_whole_surah
         segment_assets.append(
             SegmentTextAsset(
                 arabic_lines=build_arabic_line_files(temp_dir, f"segment_arabic_{index}", arabic_text),
@@ -5501,9 +5602,11 @@ def create_timed_segment_assets(config: RenderConfig, temp_dir: Path) -> list[Ti
     timed_assets: list[TimedSegmentTextAsset] = []
     for index, segment in enumerate(config.timed_segments):
         arabic_text = build_wrapped_arabic_text(segment.arabic, is_cinematic=is_cinematic)
-        translation_text = wrap_text(segment.translation, width=40 if is_cinematic else 45)
-        # Skip translation lines for whole-surah mode
-        show_translation = globals().get('IS_LANDSCAPE') and not is_whole_surah
+        explanation_text = normalize_optional_text(segment.tafsir) or normalize_optional_text(segment.translation) or ""
+        explanation_width = 58 if globals().get('IS_LANDSCAPE') else 34
+        translation_text = wrap_multiline_text(explanation_text, width=explanation_width)
+        # Show Tafsir al-Muyassar under short clips, but avoid overcrowding full-surah renders.
+        show_translation = bool(translation_text) and not is_whole_surah
         timed_assets.append(
             TimedSegmentTextAsset(
                 arabic_lines=build_arabic_line_files(temp_dir, f"timed_segment_arabic_{index}", arabic_text),
@@ -5863,7 +5966,8 @@ def build_filter_complex(
 
             # Render translations using ASS subtitle overlay.
             trans_ass_font_dir = arabic_ass_font_dir
-            if config.latin_font_file and config.latin_font_file != config.font_file:
+            ass_has_arabic_explanation = any(contains_arabic_text_paths(asset.translation_lines) for asset in timed_segment_assets)
+            if not ass_has_arabic_explanation and config.latin_font_file and config.latin_font_file != config.font_file:
                 latin_font_dir = prepare_ass_font_dir(resolve_drawtext_font_file(config.latin_font_file), translation_ass_path.parent)
                 if latin_font_dir is not None:
                     trans_ass_font_dir = latin_font_dir
@@ -5927,6 +6031,11 @@ def build_filter_complex(
                     previous_label = get_last_layer_label(arabic_prefix, segment_asset.arabic_lines, previous_label)
 
                 translation_prefix = f"timed_segment_translation_layer_{index}"
+                explanation_font_file = (
+                    config.font_file
+                    if contains_arabic_text_paths(segment_asset.translation_lines)
+                    else config.latin_font_file or (None if is_cinematic else config.font_file)
+                )
                 filters.extend(
                     build_text_block_filters(
                         input_label=previous_label,
@@ -5937,7 +6046,7 @@ def build_filter_complex(
                         font_color="0xf8fafc",
                         box_color=None if is_cinematic else "0x00000022",
                         alpha_expression=segment_alpha,
-                        font_file=config.latin_font_file or (None if is_cinematic else config.font_file),
+                        font_file=explanation_font_file,
                         line_spacing=translation_line_spacing,
                         box_border=0,
                         border_width=8,
@@ -6005,6 +6114,11 @@ def build_filter_complex(
                 previous_label = get_last_layer_label(arabic_prefix, segment_asset.arabic_lines, previous_label)
 
             translation_prefix = f"segment_translation_layer_{index}"
+            explanation_font_file = (
+                config.font_file
+                if contains_arabic_text_paths(segment_asset.translation_lines)
+                else config.latin_font_file or (None if is_cinematic else config.font_file)
+            )
             filters.extend(
                 build_text_block_filters(
                     input_label=previous_label,
@@ -6015,7 +6129,7 @@ def build_filter_complex(
                     font_color="0xf8fafc",
                     box_color=None if is_cinematic else "0x00000022",
                     alpha_expression=segment_alpha,
-                    font_file=config.latin_font_file or (None if is_cinematic else config.font_file),
+                    font_file=explanation_font_file,
                     line_spacing=translation_line_spacing,
                     box_border=0,
                     border_width=8,
@@ -6071,6 +6185,11 @@ def build_filter_complex(
             previous_label = get_last_layer_label("verse_layer", text_assets["verse"], previous_label)
 
         if "translation" in text_assets:
+            explanation_font_file = (
+                config.font_file
+                if contains_arabic_text_paths(text_assets["translation"])
+                else config.latin_font_file or (None if is_cinematic else config.font_file)
+            )
             filters.extend(
                 build_text_block_filters(
                     input_label=previous_label,
@@ -6081,7 +6200,7 @@ def build_filter_complex(
                     font_color="0xf8fafc",
                     box_color=None if is_cinematic and config.prefer_static_text_overlay else "0x02061766" if is_cinematic else None,
                     alpha_expression=alpha_expression,
-                    font_file=config.latin_font_file or (None if is_cinematic else config.font_file),
+                    font_file=explanation_font_file,
                     line_spacing=translation_line_spacing,
                     box_border=0,
                     border_width=8,
