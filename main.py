@@ -262,6 +262,7 @@ class TimedSegmentTextAsset:
     translation_lines: list[Path]
     start_time: float
     end_time: float
+    explanation_label_lines: list[Path] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -4547,6 +4548,20 @@ def build_creator_note_overlay_text(config: RenderConfig) -> str:
     return wrap_multiline_text(creator_note, width=width)
 
 
+def build_tafsir_overlay_text(tafsir_text: str) -> str:
+    if not contains_arabic_text(tafsir_text):
+        return ""
+    width = 58 if globals().get('IS_LANDSCAPE') else 34
+    limit = 360 if globals().get('IS_LANDSCAPE') else 220
+    max_lines = 4
+    wrapped_text = wrap_multiline_text(build_translation_excerpt(tafsir_text, limit=limit), width=width)
+    lines = wrapped_text.splitlines()
+    if len(lines) > max_lines:
+        lines = lines[:max_lines]
+        lines[-1] = f"{lines[-1].rstrip(' .،؛:')}..."
+    return "\n".join(lines)
+
+
 def estimate_arabic_word_units(word: str) -> int:
     base_letters = re.sub(r"[\u0640\u064b-\u065f\u0670]", "", word)
     return max(1, len(base_letters))
@@ -5524,13 +5539,8 @@ def create_timed_segment_assets(config: RenderConfig, temp_dir: Path) -> list[Ti
     for index, segment in enumerate(config.timed_segments):
         arabic_text = build_wrapped_arabic_text(segment.arabic, is_cinematic=is_cinematic)
         tafsir_text = normalize_optional_text(segment.tafsir)
-        if tafsir_text:
-            explanation_text = f"التفسير الميسر:\n{tafsir_text}"
-        else:
-            explanation_text = normalize_optional_text(segment.translation) or ""
-        explanation_width = 58 if globals().get('IS_LANDSCAPE') else 34
-        translation_text = wrap_multiline_text(explanation_text, width=explanation_width)
-        # Show Tafsir al-Muyassar under short clips, but avoid overcrowding full-surah renders.
+        translation_text = build_tafsir_overlay_text(tafsir_text or "") if tafsir_text else ""
+        # Show Tafsir al-Muyassar under short clips, but avoid English fallback and full-surah overcrowding.
         show_translation = bool(translation_text) and not is_whole_surah
         timed_assets.append(
             TimedSegmentTextAsset(
@@ -5538,6 +5548,7 @@ def create_timed_segment_assets(config: RenderConfig, temp_dir: Path) -> list[Ti
                 translation_lines=build_line_files(temp_dir, f"timed_segment_translation_{index}", translation_text) if show_translation else [],
                 start_time=segment.start_time,
                 end_time=segment.end_time,
+                explanation_label_lines=build_arabic_line_files(temp_dir, f"timed_segment_tafsir_label_{index}", "التفسير الميسر") if show_translation else [],
             )
         )
 
@@ -5909,6 +5920,12 @@ def build_filter_complex(
             # Standard path for few segments: use drawtext filters.
             for index, segment_asset in enumerate(timed_segment_assets):
                 segment_alpha = build_timed_alpha_expression(segment_asset.start_time, segment_asset.end_time)
+                tafsir_label_line_count = len(segment_asset.explanation_label_lines)
+                tafsir_layout_line_count = (
+                    len(segment_asset.translation_lines)
+                    + tafsir_label_line_count
+                    + (1 if tafsir_label_line_count else 0)
+                )
 
                 arabic_font_size, arabic_line_spacing = resolve_arabic_text_metrics(
                     len(segment_asset.arabic_lines),
@@ -5916,14 +5933,14 @@ def build_filter_complex(
                     max_line_units=measure_arabic_line_units("\n".join(path.read_text(encoding="utf-8") for path in segment_asset.arabic_lines)),
                 )
                 translation_font_size, translation_line_spacing = resolve_translation_text_metrics(
-                    len(segment_asset.translation_lines),
+                    tafsir_layout_line_count,
                     is_cinematic=is_cinematic,
                 )
                 arabic_block_height = (len(segment_asset.arabic_lines) * (arabic_font_size + arabic_line_spacing)) - arabic_line_spacing
                 preferred_arabic_top = ((VIDEO_HEIGHT - arabic_block_height) / 2) - (cinematic_arabic_offset if is_cinematic else 100)
                 arabic_top, translation_top = resolve_text_stack_positions(
                     arabic_block_height=arabic_block_height,
-                    translation_line_count=len(segment_asset.translation_lines),
+                    translation_line_count=tafsir_layout_line_count,
                     translation_font_size=translation_font_size,
                     translation_line_spacing=translation_line_spacing,
                     is_cinematic=is_cinematic,
@@ -5954,6 +5971,32 @@ def build_filter_complex(
                         )
                     )
                     previous_label = get_last_layer_label(arabic_prefix, segment_asset.arabic_lines, previous_label)
+
+                if segment_asset.explanation_label_lines:
+                    label_prefix = f"timed_segment_tafsir_label_layer_{index}"
+                    label_font_size = max(24, translation_font_size - 10)
+                    filters.extend(
+                        build_text_block_filters(
+                            input_label=previous_label,
+                            output_prefix=label_prefix,
+                            text_paths=segment_asset.explanation_label_lines,
+                            top_y=translation_top,
+                            font_size=label_font_size,
+                            font_color="0xbae6fd",
+                            box_color=None,
+                            alpha_expression=segment_alpha,
+                            font_file=config.font_file,
+                            line_spacing=4,
+                            box_border=0,
+                            border_width=5,
+                            border_color="black",
+                            shadow_x=0,
+                            shadow_y=0,
+                            shadow_color="0x00000000",
+                        )
+                    )
+                    previous_label = get_last_layer_label(label_prefix, segment_asset.explanation_label_lines, previous_label)
+                    translation_top += label_font_size + 18
 
                 translation_prefix = f"timed_segment_translation_layer_{index}"
                 explanation_font_file = (
