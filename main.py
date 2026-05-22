@@ -262,7 +262,6 @@ class TimedSegmentTextAsset:
     translation_lines: list[Path]
     start_time: float
     end_time: float
-    explanation_label_lines: list[Path] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -4551,15 +4550,8 @@ def build_creator_note_overlay_text(config: RenderConfig) -> str:
 def build_tafsir_overlay_text(tafsir_text: str) -> str:
     if not contains_arabic_text(tafsir_text):
         return ""
-    width = 58 if globals().get('IS_LANDSCAPE') else 34
-    limit = 360 if globals().get('IS_LANDSCAPE') else 220
-    max_lines = 4
-    wrapped_text = wrap_multiline_text(build_translation_excerpt(tafsir_text, limit=limit), width=width)
-    lines = wrapped_text.splitlines()
-    if len(lines) > max_lines:
-        lines = lines[:max_lines]
-        lines[-1] = f"{lines[-1].rstrip(' .،؛:')}..."
-    return "\n".join(lines)
+    width = 70 if globals().get('IS_LANDSCAPE') else 42
+    return wrap_multiline_text(tafsir_text, width=width)
 
 
 def estimate_arabic_word_units(word: str) -> int:
@@ -4651,12 +4643,18 @@ def resolve_arabic_text_metrics(line_count: int, *, is_cinematic: bool, max_line
 
 def resolve_translation_text_metrics(line_count: int, *, is_cinematic: bool) -> tuple[int, int]:
     if not is_cinematic:
+        if line_count >= 10:
+            return 24, 6
         if line_count >= 7:
             return 30, 10
         if line_count >= 5:
             return 34, 10
         return 40, 14
 
+    if line_count >= 12:
+        return 28, 6
+    if line_count >= 10:
+        return 32, 8
     if line_count >= 7:
         return 38, 10
     if line_count >= 5:
@@ -5548,7 +5546,6 @@ def create_timed_segment_assets(config: RenderConfig, temp_dir: Path) -> list[Ti
                 translation_lines=build_line_files(temp_dir, f"timed_segment_translation_{index}", translation_text) if show_translation else [],
                 start_time=segment.start_time,
                 end_time=segment.end_time,
-                explanation_label_lines=build_arabic_line_files(temp_dir, f"timed_segment_tafsir_label_{index}", "التفسير الميسر") if show_translation else [],
             )
         )
 
@@ -5920,12 +5917,7 @@ def build_filter_complex(
             # Standard path for few segments: use drawtext filters.
             for index, segment_asset in enumerate(timed_segment_assets):
                 segment_alpha = build_timed_alpha_expression(segment_asset.start_time, segment_asset.end_time)
-                tafsir_label_line_count = len(segment_asset.explanation_label_lines)
-                tafsir_layout_line_count = (
-                    len(segment_asset.translation_lines)
-                    + tafsir_label_line_count
-                    + (1 if tafsir_label_line_count else 0)
-                )
+                tafsir_layout_line_count = len(segment_asset.translation_lines)
 
                 arabic_font_size, arabic_line_spacing = resolve_arabic_text_metrics(
                     len(segment_asset.arabic_lines),
@@ -5971,32 +5963,6 @@ def build_filter_complex(
                         )
                     )
                     previous_label = get_last_layer_label(arabic_prefix, segment_asset.arabic_lines, previous_label)
-
-                if segment_asset.explanation_label_lines:
-                    label_prefix = f"timed_segment_tafsir_label_layer_{index}"
-                    label_font_size = max(24, translation_font_size - 10)
-                    filters.extend(
-                        build_text_block_filters(
-                            input_label=previous_label,
-                            output_prefix=label_prefix,
-                            text_paths=segment_asset.explanation_label_lines,
-                            top_y=translation_top,
-                            font_size=label_font_size,
-                            font_color="0xbae6fd",
-                            box_color=None,
-                            alpha_expression=segment_alpha,
-                            font_file=config.font_file,
-                            line_spacing=4,
-                            box_border=0,
-                            border_width=5,
-                            border_color="black",
-                            shadow_x=0,
-                            shadow_y=0,
-                            shadow_color="0x00000000",
-                        )
-                    )
-                    previous_label = get_last_layer_label(label_prefix, segment_asset.explanation_label_lines, previous_label)
-                    translation_top += label_font_size + 18
 
                 translation_prefix = f"timed_segment_translation_layer_{index}"
                 explanation_font_file = (
