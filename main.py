@@ -186,11 +186,7 @@ DEFAULT_FONT_URL_FALLBACKS = {
         "https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSans/NotoSans-Regular.ttf",
     ),
 }
-PEXELS_API_BASE_URL = "https://api.pexels.com/videos"
-DEFAULT_PEXELS_API_KEY_FILE = ".secrets/pexels-api-key.txt"
-PEXELS_NATURE_QUERIES = ("nature", "river mountains", "forest", "ocean waves", "rain forest", "sky clouds", "sunrise", "waterfall", "desert", "green nature")
 SHOWCASE_STYLE = "showcase"
-DEFAULT_BACKGROUND_URL = "https://upload.wikimedia.org/wikipedia/commons/6/65/Scenic_landscape.jpg"
 YOUTUBE_UPLOAD_SCOPE = "https://www.googleapis.com/auth/youtube.upload"
 DEFAULT_YOUTUBE_PRIVACY_STATUS = "private"
 DEFAULT_YOUTUBE_CATEGORY_ID = "27"
@@ -433,7 +429,7 @@ class RenderConfig:
             if library_background_path is not None:
                 print(f"Using local background from {library_background_path}")
             else:
-                background_url_value = DEFAULT_BACKGROUND_URL
+                print("No approved local background found; using generated safe background.")
 
         font_url_value = normalize_optional_text(payload.get("font_url"))
         local_font_path = resolve_optional_local_path(config_dir, payload.get("font_file"))
@@ -3297,71 +3293,6 @@ def load_auto_reciters_from_library(library_path: Path) -> list[AutoReciter]:
     return reciters
 
 
-def fetch_pexels_nature_video(cache_dir: Path, pexels_api_key: str) -> Path | None:
-    """Fetch a random nature video from Pexels API and cache it locally."""
-    query = random.choice(PEXELS_NATURE_QUERIES)
-    orientation = 'landscape' if globals().get('IS_LANDSCAPE') else 'portrait'
-    url = f"{PEXELS_API_BASE_URL}/search?query={query.replace(' ', '+')}&per_page=15&orientation={orientation}"
-    try:
-        request = Request(url, headers={"Authorization": pexels_api_key, "User-Agent": "shortQuran/1.0"})
-        with urlopen(request, timeout=30) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-    except Exception as error:  # noqa: BLE001
-        print(f"[Pexels] Failed to search videos: {error}")
-        return None
-
-    videos = payload.get("videos")
-    if not isinstance(videos, list) or not videos:
-        print(f"[Pexels] No videos found for query: {query}")
-        return None
-
-    # Filter to portrait/tall videos only, pick random
-    tall_videos = [v for v in videos if isinstance(v, dict) and int(v.get("height", 0)) >= int(v.get("width", 1))]
-    chosen = random.choice(tall_videos or videos)
-    video_files = chosen.get("video_files") if isinstance(chosen, dict) else None
-    if not isinstance(video_files, list) or not video_files:
-        return None
-
-    # Prefer HD (1080p) portrait files
-    sorted_files = sorted(
-        [f for f in video_files if isinstance(f, dict) and f.get("link")],
-        key=lambda f: abs(int(f.get("height", 0)) - 1920),
-    )
-    chosen_file = sorted_files[0] if sorted_files else None
-    if chosen_file is None:
-        return None
-
-    video_url = str(chosen_file["link"])
-    video_id = str(chosen.get("id", "unknown"))
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    cached_path = cache_dir / f"pexels_{video_id}.mp4"
-    if cached_path.exists():
-        print(f"[Pexels] Using cached video: {cached_path.name}")
-        return cached_path
-
-    print(f"[Pexels] Downloading nature video: {video_id} ({query})")
-    try:
-        request = Request(video_url, headers={"User-Agent": "shortQuran/1.0"})
-        with urlopen(request, timeout=60) as response:
-            cached_path.write_bytes(response.read())
-        print(f"[Pexels] Saved to {cached_path.name}")
-        return cached_path
-    except Exception as error:  # noqa: BLE001
-        print(f"[Pexels] Failed to download video: {error}")
-        if cached_path.exists():
-            cached_path.unlink()
-        return None
-
-
-def load_pexels_api_key(base_dir: Path) -> str | None:
-    """Load Pexels API key from .secrets/pexels-api-key.txt"""
-    key_path = (base_dir / DEFAULT_PEXELS_API_KEY_FILE).resolve()
-    if not key_path.exists():
-        return None
-    key = key_path.read_text(encoding="utf-8").strip()
-    return key or None
-
-
 def finalize_showcase_render_config(
     *,
     base_dir: Path,
@@ -3421,7 +3352,7 @@ def finalize_showcase_render_config(
         index=index,
     )
 
-    # Prefer user-provided local backgrounds first, then fall back to Pexels/default.
+    # Prefer only approved local backgrounds. If none are available, render a generated safe background.
     background_path: Path | None = None
     used_background_paths = {
         normalize_optional_text(entry.get("background_path"))
@@ -3433,12 +3364,7 @@ def finalize_showcase_render_config(
         excluded_paths={path for path in used_background_paths if path},
     )
     if background_path is None:
-        pexels_key = load_pexels_api_key(base_dir)
-        if pexels_key:
-            pexels_cache = cache_dir / "pexels"
-            background_path = fetch_pexels_nature_video(pexels_cache, pexels_key)
-    if background_path is None:
-        background_path = download_asset(DEFAULT_BACKGROUND_URL, cache_dir / "background", "background")
+        print("No approved local background found; using generated safe background.")
 
     font_file = resolve_default_arabic_font_file(base_dir, cache_dir)
     latin_font_file = download_asset(DEFAULT_LATIN_FONT_URL, cache_dir / "font", "font")
@@ -4149,15 +4075,10 @@ def finalize_auto_render_config(
 
     audio_duration = probe_duration(audio_output, ffprobe_command)
     if not globals().get('IS_WHOLE_SURAH') and audio_duration > (selected_target_seconds + 0.05):
-        trimmed_output = cache_dir / "compiled_audio" / f"{audio_output.stem}-trim{audio_output.suffix}"
-        trim_audio_segment(
-            audio_output,
-            trimmed_output,
-            start_time=0.0,
-            end_time=selected_target_seconds,
-            ffmpeg_command=ffmpeg_command,
+        print(
+            "Keeping complete ayah audio instead of trimming to the target duration "
+            f"({audio_duration:.2f}s > {selected_target_seconds:.2f}s)."
         )
-        audio_output = trimmed_output
 
     use_static_source_audio = source_audio_path is not None
     timed_segments: list[TimedSegment] = []
@@ -4186,7 +4107,7 @@ def finalize_auto_render_config(
     if background_path is not None:
         print(f"Using local background from {background_path}")
     else:
-        background_path = download_asset(DEFAULT_BACKGROUND_URL, cache_dir / "background", "background")
+        print("No approved local background found; using generated safe background.")
     
     font_file = resolve_default_arabic_font_file(base_dir, cache_dir)
 
@@ -5602,7 +5523,11 @@ def create_timed_segment_assets(config: RenderConfig, temp_dir: Path) -> list[Ti
     timed_assets: list[TimedSegmentTextAsset] = []
     for index, segment in enumerate(config.timed_segments):
         arabic_text = build_wrapped_arabic_text(segment.arabic, is_cinematic=is_cinematic)
-        explanation_text = normalize_optional_text(segment.tafsir) or normalize_optional_text(segment.translation) or ""
+        tafsir_text = normalize_optional_text(segment.tafsir)
+        if tafsir_text:
+            explanation_text = f"التفسير الميسر:\n{tafsir_text}"
+        else:
+            explanation_text = normalize_optional_text(segment.translation) or ""
         explanation_width = 58 if globals().get('IS_LANDSCAPE') else 34
         translation_text = wrap_multiline_text(explanation_text, width=explanation_width)
         # Show Tafsir al-Muyassar under short clips, but avoid overcrowding full-surah renders.

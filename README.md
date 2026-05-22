@@ -217,6 +217,8 @@ If the channel token fails with `invalid_grant` or `Token has been expired or re
 
 If the video uploads but the custom thumbnail returns HTTP 403, the upload itself is still valid. Check that the exact YouTube channel is verified and allowed to use custom thumbnails, or regenerate that channel's OAuth token.
 
+Automatic videos use only approved local backgrounds from `backgroundPhoto/`. Add your own reviewed images or videos there to keep the visuals changing safely. If the folder is empty or no approved background is available, the renderer uses a generated safe background instead of downloading random stock footage.
+
 To make automatic uploads less repetitive, the workflows can also write a `CREATOR_NOTES_JSON` secret to `.secrets/creator-notes.json`. Add short human-written reflections there so each video includes a visible reflection card and a matching note in the description:
 
 ```json
