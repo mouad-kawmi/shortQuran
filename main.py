@@ -131,6 +131,8 @@ AUTO_RECENT_SHOWCASE_START_WINDOW = 4
 AUTO_DESCRIPTION_EXCERPT_CHARS = 220
 CREATOR_NOTE_EXCERPT_CHARS = 150
 TAFSIR_MUYASSAR_RESOURCE_ID = 16
+AUTO_TAFSIR_ARABIC_RAISE_PX = 90
+AUTO_TAFSIR_TRANSLATION_LOWER_PX = 110
 DEFAULT_YOUTUBE_AUTO_SCHEDULE_PRESET = "ma_mena_prime"
 DEFAULT_YOUTUBE_AUTO_SCHEDULE_TIMEZONE = "Africa/Casablanca"
 DEFAULT_YOUTUBE_AUTO_SCHEDULE_BUFFER_MINUTES = 30
@@ -4734,6 +4736,25 @@ def resolve_text_stack_positions(
     return int(round(arabic_top)), int(round(translation_top))
 
 
+def apply_timed_tafsir_position_shift(
+    preferred_arabic_top: float,
+    preferred_translation_top: float,
+    *,
+    translation_line_count: int,
+) -> tuple[float, float]:
+    if translation_line_count <= 0 or globals().get('IS_WHOLE_SURAH'):
+        return preferred_arabic_top, preferred_translation_top
+
+    if globals().get('IS_LANDSCAPE'):
+        arabic_raise = AUTO_TAFSIR_ARABIC_RAISE_PX * 0.6
+        tafsir_lower = AUTO_TAFSIR_TRANSLATION_LOWER_PX * 0.6
+    else:
+        arabic_raise = AUTO_TAFSIR_ARABIC_RAISE_PX
+        tafsir_lower = AUTO_TAFSIR_TRANSLATION_LOWER_PX
+
+    return preferred_arabic_top - arabic_raise, preferred_translation_top + tafsir_lower
+
+
 def resolve_minimalist_arabic_layout(text_lines: list[str]) -> tuple[int, int, int]:
     font_size, line_spacing = resolve_arabic_text_metrics(
         len(text_lines),
@@ -5026,6 +5047,12 @@ def create_arabic_ass_file(
             )
             arabic_block_height = (len(verse_lines) * (arabic_font_size + arabic_line_spacing)) - arabic_line_spacing
             preferred_arabic_top = ((VIDEO_HEIGHT - arabic_block_height) / 2) - (cinematic_arabic_offset if is_cinematic else 100)
+            preferred_translation_top = cinematic_translation_top if is_cinematic else VIDEO_HEIGHT - (250 if globals().get('IS_LANDSCAPE') else 500)
+            preferred_arabic_top, preferred_translation_top = apply_timed_tafsir_position_shift(
+                preferred_arabic_top,
+                preferred_translation_top,
+                translation_line_count=len(segment_asset.translation_lines),
+            )
             arabic_top, _ = resolve_text_stack_positions(
                 arabic_block_height=arabic_block_height,
                 translation_line_count=len(segment_asset.translation_lines),
@@ -5033,7 +5060,7 @@ def create_arabic_ass_file(
                 translation_line_spacing=translation_line_spacing,
                 is_cinematic=is_cinematic,
                 preferred_arabic_top=preferred_arabic_top,
-                preferred_translation_top=cinematic_translation_top if is_cinematic else VIDEO_HEIGHT - (250 if globals().get('IS_LANDSCAPE') else 500),
+                preferred_translation_top=preferred_translation_top,
             )
             dialogues.append(
                 build_ass_dialogue(
@@ -5201,6 +5228,12 @@ def create_translation_ass_file(
         )
         arabic_block_height = (len(segment_asset.arabic_lines) * (arabic_font_size + arabic_line_spacing)) - arabic_line_spacing
         preferred_arabic_top = ((VIDEO_HEIGHT - arabic_block_height) / 2) - (cinematic_arabic_offset if is_cinematic else 100)
+        preferred_translation_top = cinematic_translation_top if is_cinematic else VIDEO_HEIGHT - (250 if globals().get('IS_LANDSCAPE') else 500)
+        preferred_arabic_top, preferred_translation_top = apply_timed_tafsir_position_shift(
+            preferred_arabic_top,
+            preferred_translation_top,
+            translation_line_count=len(segment_asset.translation_lines),
+        )
         _, translation_top = resolve_text_stack_positions(
             arabic_block_height=arabic_block_height,
             translation_line_count=len(segment_asset.translation_lines),
@@ -5208,7 +5241,7 @@ def create_translation_ass_file(
             translation_line_spacing=translation_line_spacing,
             is_cinematic=is_cinematic,
             preferred_arabic_top=preferred_arabic_top,
-            preferred_translation_top=cinematic_translation_top if is_cinematic else VIDEO_HEIGHT - (250 if globals().get('IS_LANDSCAPE') else 500),
+            preferred_translation_top=preferred_translation_top,
         )
         ass_text = escape_ass_text("\n".join(translation_lines))
         override = (
@@ -5892,6 +5925,12 @@ def build_filter_complex(
                     )
                     arabic_block_height = (len(segment_asset.arabic_lines) * (arabic_font_size + arabic_line_spacing)) - arabic_line_spacing
                     preferred_arabic_top = ((VIDEO_HEIGHT - arabic_block_height) / 2) - (cinematic_arabic_offset if is_cinematic else 100)
+                    preferred_translation_top = cinematic_translation_top if is_cinematic else VIDEO_HEIGHT - (250 if globals().get('IS_LANDSCAPE') else 500)
+                    preferred_arabic_top, preferred_translation_top = apply_timed_tafsir_position_shift(
+                        preferred_arabic_top,
+                        preferred_translation_top,
+                        translation_line_count=len(segment_asset.translation_lines),
+                    )
                     arabic_top, _ = resolve_text_stack_positions(
                         arabic_block_height=arabic_block_height,
                         translation_line_count=len(segment_asset.translation_lines),
@@ -5899,7 +5938,7 @@ def build_filter_complex(
                         translation_line_spacing=translation_line_spacing,
                         is_cinematic=is_cinematic,
                         preferred_arabic_top=preferred_arabic_top,
-                        preferred_translation_top=cinematic_translation_top if is_cinematic else VIDEO_HEIGHT - (250 if globals().get('IS_LANDSCAPE') else 500),
+                        preferred_translation_top=preferred_translation_top,
                     )
                     arabic_prefix = f"timed_segment_arabic_layer_{index}"
                     filters.extend(
@@ -5957,6 +5996,12 @@ def build_filter_complex(
                 )
                 arabic_block_height = (len(segment_asset.arabic_lines) * (arabic_font_size + arabic_line_spacing)) - arabic_line_spacing
                 preferred_arabic_top = ((VIDEO_HEIGHT - arabic_block_height) / 2) - (cinematic_arabic_offset if is_cinematic else 100)
+                preferred_translation_top = cinematic_translation_top if is_cinematic else VIDEO_HEIGHT - (250 if globals().get('IS_LANDSCAPE') else 500)
+                preferred_arabic_top, preferred_translation_top = apply_timed_tafsir_position_shift(
+                    preferred_arabic_top,
+                    preferred_translation_top,
+                    translation_line_count=tafsir_layout_line_count,
+                )
                 arabic_top, translation_top = resolve_text_stack_positions(
                     arabic_block_height=arabic_block_height,
                     translation_line_count=tafsir_layout_line_count,
@@ -5964,7 +6009,7 @@ def build_filter_complex(
                     translation_line_spacing=translation_line_spacing,
                     is_cinematic=is_cinematic,
                     preferred_arabic_top=preferred_arabic_top,
-                    preferred_translation_top=cinematic_translation_top if is_cinematic else VIDEO_HEIGHT - (250 if globals().get('IS_LANDSCAPE') else 500),
+                    preferred_translation_top=preferred_translation_top,
                 )
                 if arabic_ass_path is None:
                     arabic_prefix = f"timed_segment_arabic_layer_{index}"
