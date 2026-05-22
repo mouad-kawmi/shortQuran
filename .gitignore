@@ -11,3 +11,22 @@ output.log
 *.jfif
 *.mp3
 *.log
+
+# Accidental shell/test artifacts
+/-ErrorAction/
+/SilentlyContinue/
+/aac
+/cd
+/Microsoft
+/ren
+/set
+/Amiri-Bold.ttf
+/design_page.html
+/test.ttf
+/test_bidi.py
+/test_font.py
+/test_bidi.txt
+/test_out.txt
+/test_lateef.png
+/test_pillow.png
+/test_pinterest_config.json
