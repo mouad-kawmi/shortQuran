@@ -60,10 +60,16 @@ jobs:
       - name: Write Auto Reciter Library
         env:
           AUTO_RECITER_LIBRARY_JSON: ${{ secrets.AUTO_RECITER_LIBRARY_JSON }}
+          CREATOR_NOTES_JSON: ${{ secrets.CREATOR_NOTES_JSON }}
         run: |
           mkdir -p .secrets
           if [ -n "$AUTO_RECITER_LIBRARY_JSON" ]; then
             printf '%s' "$AUTO_RECITER_LIBRARY_JSON" > .secrets/auto-reciters.json
+          fi
+          if [ -n "$CREATOR_NOTES_JSON" ]; then
+            printf '%s' "$CREATOR_NOTES_JSON" > .secrets/creator-notes.json
+          else
+            printf '{}' > .secrets/creator-notes.json
           fi
 
       - name: Generate And Upload YouTube Full Surah
@@ -80,6 +86,7 @@ jobs:
             --count 1 \
             --landscape \
             --whole-surah \
+            --creator-notes-file ./.secrets/creator-notes.json \
             --youtube-upload \
             --youtube-client-secrets-file ./.secrets/youtube-client-secret.json \
             --youtube-token-file ./.secrets/youtube-token.json \

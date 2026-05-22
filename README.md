@@ -217,6 +217,26 @@ If the channel token fails with `invalid_grant` or `Token has been expired or re
 
 If the video uploads but the custom thumbnail returns HTTP 403, the upload itself is still valid. Check that the exact YouTube channel is verified and allowed to use custom thumbnails, or regenerate that channel's OAuth token.
 
+To make automatic uploads less repetitive, the workflows can also write a `CREATOR_NOTES_JSON` secret to `.secrets/creator-notes.json`. Add short human-written reflections there so each video includes a visible reflection card and a matching note in the description:
+
+```json
+{
+  "default": [
+    "Reflection: This passage reminds us to slow down before reacting.\nTakeaway: Choose one action today that matches the meaning."
+  ],
+  "chapters": {
+    "Al-Mulk": [
+      "Reflection: Surah Al-Mulk turns the heart toward accountability and hope.\nTakeaway: Listen once for recitation, then once for the meaning."
+    ]
+  },
+  "verses": {
+    "67:1-5": [
+      "Reflection: These opening ayat connect Allah's dominion with the purpose of life and death.\nTakeaway: Ask what one deed you can improve today."
+    ]
+  }
+}
+```
+
 Optional flags:
 
 - `--youtube-schedule-at 2026-04-10T18:00:00+01:00`

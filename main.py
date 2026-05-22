@@ -94,6 +94,21 @@ AUTO_CTA_LINES = {
     "repeat": "Listen again, reflect slowly, and keep the Quran close to your day.",
     "comment": "If this verse touched you, leave a short reminder in the comments.",
 }
+AUTO_CREATOR_NOTE_FOCUS_LINES = {
+    "mercy": "Allah's mercy is close, and the heart returns to Him with hope.",
+    "patience": "Patience is not passive; it is trust while doing what is right.",
+    "guidance": "Guidance begins when the heart listens before it rushes.",
+    "accountability": "This passage reminds us that every choice has weight.",
+    "gratitude": "Gratitude changes how we see blessings and tests.",
+    "prayer": "Dua keeps the believer connected in both ease and hardship.",
+    "default": "The verse invites a quiet pause before the day continues.",
+}
+AUTO_CREATOR_NOTE_TAKEAWAYS = {
+    "one_action": "Take one small action today that matches this reminder.",
+    "repeat_meaning": "Listen once for the recitation, then once for the meaning.",
+    "personal_dua": "Turn the meaning into a short personal dua before moving on.",
+    "share_lesson": "Share the lesson, not just the clip, with someone close.",
+}
 AUTO_MIN_TARGET_SECONDS = 45.0
 AUTO_MAX_TARGET_SECONDS = 90.0
 AUTO_MIN_VERSES_COUNT = 70
@@ -113,6 +128,7 @@ AUTO_RECENT_TITLE_WINDOW = 3
 AUTO_RECENT_METADATA_WINDOW = 4
 AUTO_RECENT_SHOWCASE_START_WINDOW = 4
 AUTO_DESCRIPTION_EXCERPT_CHARS = 220
+CREATOR_NOTE_EXCERPT_CHARS = 150
 DEFAULT_YOUTUBE_AUTO_SCHEDULE_PRESET = "ma_mena_prime"
 DEFAULT_YOUTUBE_AUTO_SCHEDULE_TIMEZONE = "Africa/Casablanca"
 DEFAULT_YOUTUBE_AUTO_SCHEDULE_BUFFER_MINUTES = 30
@@ -180,6 +196,7 @@ DEFAULT_YOUTUBE_CATEGORY_ID = "27"
 DEFAULT_YOUTUBE_DEFAULT_LANGUAGE = "en"
 DEFAULT_YOUTUBE_CLIENT_SECRETS_FILE = ".secrets/youtube-client-secret.json"
 DEFAULT_YOUTUBE_TOKEN_FILE = ".secrets/youtube-token.json"
+DEFAULT_CREATOR_NOTES_FILE = ".secrets/creator-notes.json"
 FACEBOOK_GRAPH_API_BASE_URL = "https://graph.facebook.com"
 DEFAULT_FACEBOOK_API_VERSION = "v24.0"
 DEFAULT_FACEBOOK_PAGE_CONFIG_FILE = ".secrets/facebook-page-config.json"
@@ -376,6 +393,7 @@ class RenderConfig:
     facebook_credit_lines: tuple[str, ...] = ()
     arabic_surah_name: str | None = None
     arabic_reciter_name: str | None = None
+    creator_note: str | None = None
 
     @classmethod
     def from_file(cls, config_path: Path) -> "RenderConfig":
@@ -494,6 +512,7 @@ class RenderConfig:
             show_brand=show_brand,
             style_preset=style_preset,
             attribution_lines=parse_string_lines(payload.get("attribution_lines"), context="render attribution_lines"),
+            creator_note=str(payload["creator_note"]).strip() if payload.get("creator_note") else None,
         )
 
 
@@ -569,6 +588,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--auto-reciter-library-file",
         help="Optional JSON file that restricts automatic mode to a custom reciter library, for example .secrets/auto-reciters.json.",
+    )
+    parser.add_argument(
+        "--creator-notes-file",
+        help="Optional JSON file with human-written reflection notes for automatic videos, for example .secrets/creator-notes.json.",
     )
     parser.add_argument("--youtube-upload", action="store_true", help="Upload rendered videos to YouTube after each successful render.")
     parser.add_argument("--youtube-auth-only", action="store_true", help="Run the one-time YouTube OAuth flow, save the token file, and exit.")
@@ -997,6 +1020,139 @@ def build_translation_excerpt(text: str | None, *, limit: int = AUTO_DESCRIPTION
     return f"{truncated}..."
 
 
+def iter_creator_note_values(value: object) -> list[str]:
+    if isinstance(value, str):
+        cleaned = normalize_optional_text(value)
+        return [cleaned] if cleaned else []
+    if isinstance(value, list):
+        notes: list[str] = []
+        for item in value:
+            if isinstance(item, str):
+                cleaned = normalize_optional_text(item)
+                if cleaned:
+                    notes.append(cleaned)
+        return notes
+    return []
+
+
+def load_creator_notes_library(base_dir: Path, creator_notes_file: str | None) -> dict[str, object]:
+    explicit_file_raw = normalize_optional_text(creator_notes_file) or normalize_optional_text(os.getenv("CREATOR_NOTES_FILE"))
+    library_file_raw = explicit_file_raw or DEFAULT_CREATOR_NOTES_FILE
+    library_path = resolve_runtime_path(base_dir, library_file_raw)
+    if not library_path.exists():
+        if explicit_file_raw:
+            raise FileNotFoundError(f"Creator notes file not found: {library_path}")
+        return {}
+
+    payload = json.loads(library_path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"Creator notes file must contain a JSON object: {library_path}")
+    return payload
+
+
+def lookup_creator_note_candidates(
+    creator_notes_library: dict[str, object],
+    *,
+    chapter_number: int,
+    chapter_name: str,
+    verse_reference: str,
+    verse_start: int,
+    verse_end: int,
+) -> list[str]:
+    candidates: list[str] = []
+    verse_keys = [
+        verse_reference,
+        f"{chapter_number}:{verse_start}-{verse_end}",
+        f"{chapter_number}:{verse_start}" if verse_start == verse_end else "",
+    ]
+
+    verses_payload = creator_notes_library.get("verses")
+    if isinstance(verses_payload, dict):
+        for key in verse_keys:
+            if key:
+                candidates.extend(iter_creator_note_values(verses_payload.get(key)))
+
+    chapters_payload = creator_notes_library.get("chapters")
+    if isinstance(chapters_payload, dict):
+        for key in (str(chapter_number), chapter_name, chapter_name.lower()):
+            candidates.extend(iter_creator_note_values(chapters_payload.get(key)))
+
+    candidates.extend(iter_creator_note_values(creator_notes_library.get("default")))
+    return candidates
+
+
+def infer_creator_note_focus_key(translation: str | None) -> str:
+    normalized = (translation or "").lower()
+    keyword_map = {
+        "mercy": ("mercy", "merciful", "forgive", "forgiveness", "compassion"),
+        "patience": ("patient", "patience", "steadfast", "endure"),
+        "guidance": ("guide", "guidance", "path", "straight"),
+        "accountability": ("account", "judgment", "return", "deeds", "reward", "punishment"),
+        "gratitude": ("grateful", "gratitude", "thanks", "blessing", "favor"),
+        "prayer": ("pray", "prayer", "call", "dua", "supplicate"),
+    }
+    for focus_key, keywords in keyword_map.items():
+        if any(keyword in normalized for keyword in keywords):
+            return focus_key
+    return "default"
+
+
+def build_fallback_creator_note(
+    *,
+    translation: str | None,
+    history_entries: list[dict[str, object]],
+) -> tuple[str, dict[str, str]]:
+    focus_key = infer_creator_note_focus_key(translation)
+    takeaway_key = choose_balanced_history_value(
+        list(AUTO_CREATOR_NOTE_TAKEAWAYS),
+        history_entries,
+        "creator_takeaway_key",
+        recent_limit=AUTO_RECENT_METADATA_WINDOW,
+    )
+    meaning_focus = build_translation_excerpt(translation, limit=CREATOR_NOTE_EXCERPT_CHARS)
+    note_lines = [
+        f"Reflection: {AUTO_CREATOR_NOTE_FOCUS_LINES[focus_key]}",
+        f"Meaning focus: {meaning_focus}",
+        f"Takeaway: {AUTO_CREATOR_NOTE_TAKEAWAYS[takeaway_key]}",
+    ]
+    return "\n".join(note_lines), {
+        "creator_note_source": "auto_reflection",
+        "creator_focus_key": focus_key,
+        "creator_takeaway_key": takeaway_key,
+    }
+
+
+def resolve_creator_note(
+    creator_notes_library: dict[str, object],
+    *,
+    chapter_number: int,
+    chapter_name: str,
+    verse_reference: str,
+    verse_start: int,
+    verse_end: int,
+    translation: str | None,
+    history_entries: list[dict[str, object]],
+) -> tuple[str, dict[str, str]]:
+    candidates = lookup_creator_note_candidates(
+        creator_notes_library,
+        chapter_number=chapter_number,
+        chapter_name=chapter_name,
+        verse_reference=verse_reference,
+        verse_start=verse_start,
+        verse_end=verse_end,
+    )
+    if candidates:
+        recent_notes = set(get_recent_history_values(history_entries, "creator_note", limit=AUTO_RECENT_METADATA_WINDOW))
+        available_candidates = [note for note in candidates if note not in recent_notes]
+        note = random.choice(available_candidates or candidates)
+        return note, {
+            "creator_note_source": "creator_notes_file",
+            "creator_note_key": verse_reference,
+        }
+
+    return build_fallback_creator_note(translation=translation, history_entries=history_entries)
+
+
 def build_auto_description(
     config: RenderConfig,
     *,
@@ -1015,6 +1171,9 @@ def build_auto_description(
         translation_excerpt=translation_excerpt,
         cta=cta_text,
     ).strip()
+    creator_note = normalize_optional_text(config.creator_note)
+    if creator_note:
+        description_body = f"{description_body}\n\nReflection note:\n{creator_note}"
     hashtags_line = " ".join(build_youtube_hashtags(config))
     return f"{description_body}\n\n{hashtags_line}".strip()
 
@@ -2050,6 +2209,8 @@ def build_youtube_description(config: RenderConfig) -> str:
         lines.extend(["", "Arabic:", config.verse_text.strip()])
     if config.translation:
         lines.extend(["", "Meaning:", config.translation.strip()])
+    if config.creator_note:
+        lines.extend(["", "Reflection note:", config.creator_note.strip()])
     if config.attribution_lines:
         lines.extend(["", *config.attribution_lines])
     lines.extend(["", "Listen, reflect, and share khayr.", "", hashtags_line])
@@ -3184,6 +3345,7 @@ def finalize_showcase_render_config(
     base_dir: Path,
     index: int,
     history_entries: list[dict[str, object]],
+    creator_notes_library: dict[str, object],
     chapter_number: int,
     chapter_name: str,
     arabic_surah_name: str,
@@ -3263,31 +3425,44 @@ def finalize_showcase_render_config(
     hook_template_key = random.choice(list(AUTO_TITLE_HOOKS))
     hook_text = AUTO_TITLE_HOOKS[hook_template_key]
     arabic_reciter = ARABIC_RECITER_NAMES.get(reciter.reciter_name, reciter.reciter_name)
+    verse_reference = f"{chapter_number}:full"
+    creator_note, creator_note_metadata = resolve_creator_note(
+        creator_notes_library,
+        chapter_number=chapter_number,
+        chapter_name=chapter_name,
+        verse_reference=verse_reference,
+        verse_start=1,
+        verse_end=0,
+        translation=None,
+        history_entries=history_entries,
+    )
     title_text = f"{hook_text} | سورة {arabic_surah_name} كاملة | {arabic_reciter}"
     history_entry = {
         "created_at": datetime.now(timezone.utc).isoformat(),
         "combo_key": combo_key,
         "chapter_number": chapter_number,
         "chapter_name": chapter_name,
-        "verse_reference": f"{chapter_number}:full",
+        "verse_reference": verse_reference,
         "reciter_name": reciter.reciter_name,
         "attribution_lines": list(reciter.attribution_lines),
         "background_path": str(background_path.resolve()) if background_path is not None else "",
         "style_preset": SHOWCASE_STYLE,
         "title_text": title_text,
+        "creator_note": creator_note,
         "planned_duration_seconds": round(clipped_duration, 2),
         "source_duration_seconds": round(source_duration, 2),
         "clip_start_seconds": round(clip_start_seconds, 2),
         "clip_end_seconds": round(clip_end_seconds, 2),
         "output_path": str(output_path),
     }
+    history_entry.update(creator_note_metadata)
 
     return RenderConfig(
         audio_path=output_audio_path,
         output_path=output_path,
         verse_text="",
         surah_name=chapter_name,
-        verse_reference=f"{chapter_number}:full",
+        verse_reference=verse_reference,
         translation=None,
         reciter_name=reciter.reciter_name,
         background_path=background_path,
@@ -3305,6 +3480,7 @@ def finalize_showcase_render_config(
         attribution_lines=reciter.attribution_lines,
         arabic_surah_name=arabic_surah_name,
         arabic_reciter_name=reciter.reciter_name_arabic,
+        creator_note=creator_note,
     )
 
 
@@ -3827,6 +4003,7 @@ def finalize_auto_render_config(
     base_dir: Path,
     index: int,
     history_entries: list[dict[str, object]],
+    creator_notes_library: dict[str, object],
     chapter_number: int,
     chapter_name: str,
     arabic_surah_name: str,
@@ -3942,6 +4119,17 @@ def finalize_auto_render_config(
         reciter_name=ARABIC_RECITER_NAMES.get(reciter.reciter_name, reciter.reciter_name),
         history_entries=history_entries,
     )
+    combined_translation = " ".join(filter(None, (verse.translation for verse in selected_verses))) or None
+    creator_note, creator_note_metadata = resolve_creator_note(
+        creator_notes_library,
+        chapter_number=chapter_number,
+        chapter_name=chapter_name,
+        verse_reference=verse_reference,
+        verse_start=verse_start,
+        verse_end=verse_end,
+        translation=combined_translation,
+        history_entries=history_entries,
+    )
     output_path = build_auto_output_path(
         output_dir,
         chapter_number=chapter_number,
@@ -3964,6 +4152,7 @@ def finalize_auto_render_config(
         "background_path": str(background_path.resolve()) if background_path is not None else "",
         "style_preset": style_preset,
         "title_text": title_text,
+        "creator_note": creator_note,
         "target_seconds": selected_target_seconds,
         "planned_duration_seconds": round(
             max(0.0, (source_end_time or 0.0) - max(0.0, source_start_time or 0.0))
@@ -3974,10 +4163,11 @@ def finalize_auto_render_config(
         "output_path": str(output_path),
     }
     history_entry.update(metadata_keys)
+    history_entry.update(creator_note_metadata)
     history_entry["metadata_variant_key"] = (
         f"{metadata_keys['title_template_key']}|{metadata_keys['title_hook_key']}|"
         f"{metadata_keys['description_template_key']}|{metadata_keys['description_hook_key']}|"
-        f"{metadata_keys['cta_key']}"
+        f"{metadata_keys['cta_key']}|{creator_note_metadata.get('creator_note_source', '')}"
     )
     history_entry["experiment_bucket"] = (
         f"{style_preset}|{metadata_keys['title_template_key']}|{metadata_keys['description_template_key']}"
@@ -3989,7 +4179,7 @@ def finalize_auto_render_config(
         verse_text=" ".join(verse.arabic for verse in selected_verses),
         surah_name=chapter_name,
         verse_reference=verse_reference,
-        translation=" ".join(filter(None, (verse.translation for verse in selected_verses))) or None,
+        translation=combined_translation,
         reciter_name=reciter.reciter_name,
         background_path=background_path,
         font_file=font_file,
@@ -4007,6 +4197,7 @@ def finalize_auto_render_config(
         attribution_lines=reciter.attribution_lines,
         arabic_surah_name=arabic_surah_name,
         arabic_reciter_name=ARABIC_RECITER_NAMES.get(reciter.reciter_name, reciter.reciter_name),
+        creator_note=creator_note,
     )
     config.description_text = build_auto_description(
         config,
@@ -4024,6 +4215,7 @@ def build_auto_render_config(
     index: int,
     target_seconds: float,
     history_entries: list[dict[str, object]],
+    creator_notes_library: dict[str, object],
     translation_id: int,
     chapters: list[dict[str, object]],
     reciters: list[AutoReciter],
@@ -4146,6 +4338,7 @@ def build_auto_render_config(
                     base_dir=base_dir,
                     index=index,
                     history_entries=history_entries,
+                    creator_notes_library=creator_notes_library,
                     chapter_number=chapter_number,
                     chapter_name=chapter_name,
                     arabic_surah_name=arabic_surah_name,
@@ -4176,6 +4369,7 @@ def build_auto_render_config(
                     base_dir=base_dir,
                     index=index,
                     history_entries=history_entries,
+                    creator_notes_library=creator_notes_library,
                     chapter_number=chapter_number,
                     chapter_name=chapter_name,
                     arabic_surah_name=arabic_surah_name,
@@ -4206,6 +4400,7 @@ def build_auto_render_config(
                 base_dir=base_dir,
                 index=index,
                 history_entries=history_entries,
+                creator_notes_library=creator_notes_library,
                 chapter_number=chapter_number,
                 chapter_name=chapter_name,
                 arabic_surah_name=arabic_surah_name,
@@ -4230,6 +4425,7 @@ def build_auto_render_configs(
     count: int,
     target_seconds: float,
     auto_reciter_library_file: str | None = None,
+    creator_notes_file: str | None = None,
 ) -> list[RenderConfig]:
     if count <= 0:
         raise ValueError("'count' must be greater than zero.")
@@ -4284,6 +4480,7 @@ def build_auto_render_configs(
             "No chapters are available for automatic cinematic mode after enforcing the minimum verse count."
         )
     history_entries = load_auto_history(base_dir)
+    creator_notes_library = load_creator_notes_library(base_dir, creator_notes_file)
     configs: list[RenderConfig] = []
     planned_history_entries = list(history_entries)
 
@@ -4293,6 +4490,7 @@ def build_auto_render_configs(
             index=index,
             target_seconds=target_seconds,
             history_entries=planned_history_entries,
+            creator_notes_library=creator_notes_library,
             translation_id=DEFAULT_TRANSLATION_ID,
             chapters=chapters,
             reciters=reciters,
@@ -4309,6 +4507,24 @@ def build_auto_render_configs(
 def wrap_text(text: str, width: int) -> str:
     cleaned = " ".join(text.split())
     return textwrap.fill(cleaned, width=width, break_long_words=False, break_on_hyphens=False)
+
+
+def wrap_multiline_text(text: str, width: int) -> str:
+    wrapped_lines: list[str] = []
+    for line in text.splitlines():
+        cleaned_line = " ".join(line.split()).strip()
+        if not cleaned_line:
+            continue
+        wrapped_lines.extend(wrap_text(cleaned_line, width).splitlines())
+    return "\n".join(wrapped_lines)
+
+
+def build_creator_note_overlay_text(config: RenderConfig) -> str:
+    creator_note = normalize_optional_text(config.creator_note)
+    if creator_note is None:
+        return ""
+    width = 62 if globals().get('IS_LANDSCAPE') else 34
+    return wrap_multiline_text(creator_note, width=width)
 
 
 def estimate_arabic_word_units(word: str) -> int:
@@ -5179,6 +5395,7 @@ def create_text_assets(config: RenderConfig, temp_dir: Path) -> dict[str, list[P
     is_cinematic = is_cinematic_style(config.style_preset)
     is_showcase = config.style_preset == SHOWCASE_STYLE
     is_minimalist = config.style_preset == "minimalist_info"
+    creator_note_text = build_creator_note_overlay_text(config)
 
     if is_showcase:
         # Showcase: show surah name (Arabic + English) + reciter name (Arabic + English), no verse
@@ -5198,6 +5415,7 @@ def create_text_assets(config: RenderConfig, temp_dir: Path) -> dict[str, list[P
             "meta": [],
             "verse": build_arabic_line_files(temp_dir, "verse", verse_text),
             "brand": build_line_files(temp_dir, "brand", brand_text),
+            "creator_note": build_line_files(temp_dir, "creator_note", creator_note_text),
         }
         if translation_text and globals().get('IS_LANDSCAPE'):
             assets["translation"] = build_line_files(temp_dir, "translation", translation_text)
@@ -5210,6 +5428,7 @@ def create_text_assets(config: RenderConfig, temp_dir: Path) -> dict[str, list[P
             "ayah": build_line_files(temp_dir, "ayah", f"Ayat {config.verse_reference}"),
             "brand": build_line_files(temp_dir, "brand", wrap_text(config.brand_text, width=24) if config.show_brand else ""),
             "verse": build_arabic_line_files(temp_dir, "verse", build_wrapped_arabic_text(config.verse_text, is_cinematic=False)),
+            "creator_note": build_line_files(temp_dir, "creator_note", creator_note_text),
         }
         
         if config.arabic_surah_name:
@@ -5242,6 +5461,7 @@ def create_text_assets(config: RenderConfig, temp_dir: Path) -> dict[str, list[P
         "meta": build_arabic_line_files(temp_dir, "meta", meta_text),
         "verse": build_arabic_line_files(temp_dir, "verse", verse_text),
         "brand": build_line_files(temp_dir, "brand", brand_text),
+        "creator_note": build_line_files(temp_dir, "creator_note", creator_note_text),
     }
 
     if translation_text and globals().get('IS_LANDSCAPE'):
@@ -5519,6 +5739,18 @@ def build_filter_complex(
                 ))
                 previous_label = f"verse_{len(verse)-1}"
         
+        creator_note_paths = text_assets.get("creator_note", [])
+        if creator_note_paths:
+            filters.extend(build_text_block_filters(
+                input_label=previous_label, output_prefix="creator_note", text_paths=creator_note_paths,
+                top_y=VIDEO_HEIGHT - (270 if globals().get('IS_LANDSCAPE') else 430),
+                font_size=28 if globals().get('IS_LANDSCAPE') else 30,
+                font_color="0xf8fafc", box_color="0x02061799", alpha_expression=alpha_expression,
+                font_file=config.latin_font_file or config.font_file, line_spacing=8, box_border=22,
+                border_width=1, border_color="0x38bdf866", shadow_y=4, shadow_color="0x00000088", shadow_x=0
+            ))
+            previous_label = get_last_layer_label("creator_note", creator_note_paths, previous_label)
+
         if text_assets["brand"]:
             filters.extend(build_text_block_filters(
                 input_label=previous_label, output_prefix="brand", text_paths=text_assets["brand"],
@@ -5861,6 +6093,36 @@ def build_filter_complex(
             )
             previous_label = get_last_layer_label("translation_layer", text_assets["translation"], previous_label)
 
+    creator_note_paths = text_assets.get("creator_note", [])
+    if creator_note_paths:
+        creator_note_font_size = 26 if is_cinematic else 30
+        if globals().get('IS_LANDSCAPE'):
+            creator_note_top = VIDEO_HEIGHT - 260
+            creator_note_font_size = 28
+        else:
+            creator_note_top = VIDEO_HEIGHT - (430 if is_cinematic else 460)
+        filters.extend(
+            build_text_block_filters(
+                input_label=previous_label,
+                output_prefix="creator_note_layer",
+                text_paths=creator_note_paths,
+                top_y=creator_note_top,
+                font_size=creator_note_font_size,
+                font_color="0xf8fafc",
+                box_color="0x02061799",
+                alpha_expression=alpha_expression,
+                font_file=config.latin_font_file or (None if is_cinematic else config.font_file),
+                line_spacing=8,
+                box_border=22,
+                border_width=1,
+                border_color="0x38bdf866",
+                shadow_x=0,
+                shadow_y=4,
+                shadow_color="0x00000088",
+            )
+        )
+        previous_label = get_last_layer_label("creator_note_layer", creator_note_paths, previous_label)
+
     brand_font_size = 22 if is_cinematic else 28
     brand_line_spacing = 8
     filters.extend(
@@ -6148,6 +6410,7 @@ def main() -> int:
                 count=args.count,
                 target_seconds=args.target_seconds,
                 auto_reciter_library_file=args.auto_reciter_library_file,
+                creator_notes_file=args.creator_notes_file,
             )
         else:
             config_path = Path(args.config).expanduser()
